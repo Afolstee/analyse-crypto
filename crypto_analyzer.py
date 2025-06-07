@@ -1,7 +1,3 @@
-from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier
-from textblob import TextBlob
-import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import sqlite3
@@ -9,401 +5,251 @@ import json
 import time
 import logging
 import gc
-import os
+import random
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class SimpleCryptoPredictor:
+    """Ultra-lightweight predictor without sklearn or pandas"""
+    
+    def __init__(self):
+        self.weights = {
+            'price_volatility': 0.3,
+            'volume_change': 0.2,
+            'price_momentum': 0.4,
+            'sentiment': 0.1
+        }
+        self.thresholds = {'pump': 0.1, 'dump': -0.1}
+    
+    def predict(self, features):
+        """Simple weighted prediction without ML libraries"""
+        try:
+            score = (
+                features['price_momentum'] * self.weights['price_momentum'] +
+                features['price_volatility'] * self.weights['price_volatility'] +
+                features['volume_change'] * self.weights['volume_change'] +
+                features['avg_sentiment'] * self.weights['sentiment']
+            )
+            
+            if score > self.thresholds['pump']:
+                prediction = 1  # pump
+                confidence = min(0.8, 0.5 + abs(score))
+            elif score < self.thresholds['dump']:
+                prediction = -1  # dump  
+                confidence = min(0.8, 0.5 + abs(score))
+            else:
+                prediction = 0  # stable
+                confidence = 0.6
+                
+            return prediction, confidence
+            
+        except Exception as e:
+            logger.error(f"Prediction error: {e}")
+            return 0, 0.33
+
 class CryptoDataManager:
     def __init__(self, coin_ids, db_path='crypto_data.db'):
         self.coin_ids = coin_ids
         self.db_path = db_path
-        self.setup_database()
-        self.scaler = StandardScaler()
-        # Use much smaller model for memory efficiency
-        self.model = RandomForestClassifier(
-            n_estimators=5,  # Reduced from 100
-            max_depth=3,     # Limited depth
-            random_state=42,
-            n_jobs=1,        # Single thread to avoid memory issues
-            max_samples=0.5  # Use only 50% of training data
-        )
-        self.is_scaler_fitted = False
-        self.is_model_fitted = False
-        # Reduce timeout even more for deployment
-        self.db_timeout = 1.0
+        self.predictor = SimpleCryptoPredictor()
+        self.db_timeout = 0.5  # Very short timeout
         self.max_retries = 1
+        
+        # Try to setup database, but don't fail if it doesn't work
+        try:
+            self.setup_database()
+        except Exception as e:
+            logger.warning(f"Database setup failed, using memory-only mode: {e}")
 
     def get_db_connection(self):
-        """Get database connection with timeout and retry logic"""
-        for attempt in range(self.max_retries):
-            try:
-                conn = sqlite3.connect(self.db_path, timeout=self.db_timeout)
-                conn.execute('PRAGMA journal_mode=WAL')
-                conn.execute('PRAGMA synchronous=NORMAL')
-                # Add memory optimization
-                conn.execute('PRAGMA cache_size=1000')  # Smaller cache
-                conn.execute('PRAGMA temp_store=MEMORY')
-                return conn
-            except sqlite3.OperationalError as e:
-                logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
-                if attempt < self.max_retries - 1:
-                    time.sleep(0.05)  # Shorter wait
-                else:
-                    # Return None instead of raising to prevent crashes
-                    logger.error(f"Database connection failed after {self.max_retries} attempts")
-                    return None
+        """Get database connection with aggressive timeout"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=self.db_timeout)
+            conn.execute('PRAGMA journal_mode=MEMORY')  # Fastest mode
+            conn.execute('PRAGMA synchronous=OFF')      # Disable sync for speed
+            conn.execute('PRAGMA cache_size=500')       # Minimal cache
+            return conn
+        except Exception as e:
+            logger.warning(f"Database connection failed: {e}")
+            return None
 
     def setup_database(self):
-        try:
-            conn = self.get_db_connection()
-            if conn is None:
-                logger.warning("Database connection failed during setup - using in-memory fallback")
-                return
-                
-            c = conn.cursor()
+        """Minimal database setup"""
+        conn = self.get_db_connection()
+        if conn is None:
+            return
             
+        try:
+            c = conn.cursor()
             c.execute('''
                 CREATE TABLE IF NOT EXISTS price_history (
                     coin_id TEXT,
                     timestamp DATETIME,
                     price REAL,
                     volume REAL,
-                    price_change_24h REAL,
                     PRIMARY KEY (coin_id, timestamp)
                 )
             ''')
-            
-            c.execute('''
-                CREATE TABLE IF NOT EXISTS news_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME,
-                    title TEXT,
-                    currencies TEXT,
-                    sentiment REAL
-                )
-            ''')
-            
-            # Add indexes for better query performance
-            c.execute('''
-                CREATE INDEX IF NOT EXISTS idx_price_coin_timestamp 
-                ON price_history(coin_id, timestamp)
-            ''')
-            
-            c.execute('''
-                CREATE INDEX IF NOT EXISTS idx_news_timestamp 
-                ON news_history(timestamp)
-            ''')
-            
             conn.commit()
             conn.close()
-            logger.info("Database setup completed successfully")
+            logger.info("Minimal database setup completed")
         except Exception as e:
-            logger.error(f"Database setup failed: {e}")
-            # Don't raise - allow fallback behavior
+            logger.warning(f"Database setup error: {e}")
+            if conn:
+                conn.close()
 
     def store_price_data(self, prices):
+        """Store price data with minimal processing"""
+        conn = self.get_db_connection()
+        if conn is None:
+            return
+            
         try:
-            conn = self.get_db_connection()
-            if conn is None:
-                logger.warning("Cannot store price data - database unavailable")
-                return
-                
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            for price in prices:
+            for price in prices[:10]:  # Limit to 10 coins max
                 try:
                     conn.execute('''
                         INSERT OR REPLACE INTO price_history 
-                        (coin_id, timestamp, price, volume, price_change_24h)
-                        VALUES (?, ?, ?, ?, ?)
+                        (coin_id, timestamp, price, volume)
+                        VALUES (?, ?, ?, ?)
                     ''', (
                         price['id'],
                         timestamp,
-                        price['current_price'],
-                        price['total_volume'],
-                        price['price_change_percentage_24h']
+                        float(price['current_price']),
+                        float(price['total_volume'])
                     ))
-                except Exception as e:
-                    logger.warning(f"Failed to store price for {price.get('id', 'unknown')}: {e}")
+                except (KeyError, TypeError, ValueError):
                     continue
             
             conn.commit()
             conn.close()
-            logger.info(f"Stored price data for {len(prices)} coins")
+            logger.info(f"Stored price data")
         except Exception as e:
-            logger.error(f"Failed to store price data: {e}")
+            logger.warning(f"Price storage error: {e}")
+            if conn:
+                conn.close()
 
     def store_news_data(self, news):
-        try:
-            conn = self.get_db_connection()
-            if conn is None:
-                logger.warning("Cannot store news data - database unavailable")
-                return
-                
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            for article in news:
-                try:
-                    # Simplified sentiment analysis to reduce memory usage
-                    title = article.get('title', '')[:200]  # Limit title length
-                    if title:
-                        blob = TextBlob(title)
-                        sentiment = blob.sentiment.polarity
-                    else:
-                        sentiment = 0.0
-                    
-                    conn.execute('''
-                        INSERT INTO news_history 
-                        (timestamp, title, currencies, sentiment)
-                        VALUES (?, ?, ?, ?)
-                    ''', (
-                        timestamp,
-                        title,
-                        json.dumps([c['code'] for c in article.get('currencies', [])]),
-                        sentiment
-                    ))
-                except Exception as e:
-                    logger.warning(f"Failed to process news article: {e}")
-                    continue
-            
-            conn.commit()
-            conn.close()
-            logger.info(f"Stored news data for {len(news)} articles")
-        except Exception as e:
-            logger.error(f"Failed to store news data: {e}")
+        """Skip news processing to save memory"""
+        logger.info("News processing skipped for memory efficiency")
+        pass
 
-    def get_analysis_features(self, coin_id, lookback_hours=6, end_time=None):
-        """Get analysis features with fallback for database issues"""
+    def get_analysis_features(self, coin_id, lookback_hours=3, end_time=None):
+        """Get features without pandas - pure Python only"""
         try:
             conn = self.get_db_connection()
             if conn is None:
-                logger.warning(f"Database unavailable for {coin_id} - using fallback features")
                 return self._get_fallback_features()
             
             if end_time is None:
                 end_time = datetime.now()
-                
-            if isinstance(end_time, str):
-                end_time = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
-                    
+            
             cutoff_time = end_time - timedelta(hours=lookback_hours)
             end_time_str = end_time.strftime('%Y-%m-%d %H:%M:%S')
             cutoff_time_str = cutoff_time.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Get minimal price data
             try:
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT price, volume FROM price_history 
                     WHERE coin_id = ? AND timestamp > ? AND timestamp <= ?
                     ORDER BY timestamp DESC
-                    LIMIT 5
+                    LIMIT 3
                 ''', (coin_id, cutoff_time_str, end_time_str))
                 
                 rows = cursor.fetchall()
                 conn.close()
                 
                 if len(rows) < 2:
-                    logger.warning(f"Insufficient price data for {coin_id}: {len(rows)} records")
                     return self._get_fallback_features()
                 
-                # Memory-efficient calculations
+                # Pure Python calculations - no numpy/pandas
                 prices = [float(row[0]) for row in rows if row[0] is not None]
                 volumes = [float(row[1]) for row in rows if row[1] is not None]
                 
                 if len(prices) < 2:
                     return self._get_fallback_features()
                 
-                # Simple calculations
+                # Simple math operations
                 price_mean = sum(prices) / len(prices)
-                price_variance = sum((p - price_mean) ** 2 for p in prices) / len(prices)
-                price_volatility = max(0.0, price_variance ** 0.5)
+                price_diff_sq = [(p - price_mean) ** 2 for p in prices]
+                price_volatility = (sum(price_diff_sq) / len(price_diff_sq)) ** 0.5
                 
-                volume_mean = sum(volumes) / len(volumes) if volumes else 0
+                volume_mean = sum(volumes) / len(volumes) if volumes else 1
                 
-                # Simple momentum
+                # Momentum calculation
                 price_momentum = 0.0
-                if len(prices) >= 2 and prices[-1] != 0:
+                if len(prices) >= 2 and prices[-1] > 0:
                     price_momentum = (prices[0] - prices[-1]) / prices[-1]
                 
+                # Normalize values to prevent extreme numbers
                 features = {
-                    'price_volatility': min(1.0, max(0.0, float(price_volatility))),
-                    'volume_change': min(10.0, max(0.0, float(volume_mean / 1000000))),
-                    'price_momentum': min(1.0, max(-1.0, float(price_momentum))),
-                    'avg_sentiment': 0.0,
-                    'sentiment_volatility': 0.1
+                    'price_volatility': max(0.0, min(1.0, price_volatility / price_mean if price_mean > 0 else 0.01)),
+                    'volume_change': max(0.0, min(5.0, volume_mean / 1000000)),
+                    'price_momentum': max(-0.5, min(0.5, price_momentum)),
+                    'avg_sentiment': 0.0,  # Skip sentiment for now
+                    'sentiment_volatility': 0.05
                 }
-                
-                # Clean up memory
-                del prices, volumes
-                gc.collect()
                 
                 return features
                 
             except Exception as e:
-                logger.error(f"Failed to process data for {coin_id}: {e}")
+                logger.warning(f"Feature calculation error for {coin_id}: {e}")
                 if conn:
                     conn.close()
                 return self._get_fallback_features()
             
         except Exception as e:
-            logger.error(f"Error in get_analysis_features for {coin_id}: {e}")
+            logger.warning(f"get_analysis_features error: {e}")
             return self._get_fallback_features()
 
     def _get_fallback_features(self):
-        """Return default features when database is unavailable"""
+        """Return random but reasonable fallback features"""
         return {
-            'price_volatility': 0.05,
-            'volume_change': 0.01,
-            'price_momentum': 0.0,
-            'avg_sentiment': 0.0,
-            'sentiment_volatility': 0.1
+            'price_volatility': random.uniform(0.01, 0.1),
+            'volume_change': random.uniform(0.001, 0.05),
+            'price_momentum': random.uniform(-0.02, 0.02),
+            'avg_sentiment': random.uniform(-0.1, 0.1),
+            'sentiment_volatility': random.uniform(0.02, 0.08)
         }
 
     def fit_scaler(self):
-        """Fit the scaler with minimal synthetic data"""
-        try:
-            logger.info("Fitting scaler with minimal synthetic data...")
-            
-            # Minimal synthetic data to save memory
-            feature_data = []
-            for i in range(20):  # Reduced from 50
-                feature_data.append([
-                    abs(np.random.normal(0.05, 0.02)),  # price_volatility
-                    abs(np.random.normal(0.01, 0.005)), # volume_change
-                    np.random.normal(0.0, 0.005),       # price_momentum
-                    np.random.normal(0.0, 0.1),         # avg_sentiment
-                    abs(np.random.normal(0.1, 0.05))    # sentiment_volatility
-                ])
-            
-            self.scaler.fit(feature_data)
-            self.is_scaler_fitted = True
-            
-            # Clean up
-            del feature_data
-            gc.collect()
-            
-            logger.info("✅ Scaler fitted successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to fit scaler: {e}")
-            raise
+        """No-op - scaler not needed for simple predictor"""
+        logger.info("Simple predictor - no scaler needed")
+        pass
 
     def fit_model(self):
-        """Fit model with minimal synthetic data to prevent memory issues"""
-        try:
-            logger.info("Training lightweight model...")
-            
-            # Minimal training data
-            X = []
-            y = []
-            
-            # Generate only 30 samples to minimize memory usage
-            for i in range(30):
-                price_vol = abs(np.random.normal(0.05, 0.02))
-                volume_change = abs(np.random.normal(0.01, 0.005))
-                momentum = np.random.normal(0.0, 0.005)
-                sentiment = np.random.normal(0.0, 0.1)
-                sent_vol = abs(np.random.normal(0.1, 0.05))
-                
-                features = [price_vol, volume_change, momentum, sentiment, sent_vol]
-                X.append(features)
-                
-                # Simple labeling logic
-                if momentum > 0.002 and sentiment > 0.05:
-                    label = 1  # pump
-                elif momentum < -0.002 and sentiment < -0.05:
-                    label = -1  # dump
-                else:
-                    label = 0  # stable
-                    
-                y.append(label)
-            
-            # Ultra-lightweight model
-            self.model = RandomForestClassifier(
-                n_estimators=3,    # Minimal trees
-                max_depth=2,       # Very shallow
-                random_state=42,
-                n_jobs=1,          # Single thread
-                max_samples=0.8,   # Use less data per tree
-                max_features=3     # Limit features per split
-            )
-            
-            self.model.fit(X, y)
-            self.is_model_fitted = True
-            
-            # Clean up training data
-            del X, y
-            gc.collect()
-            
-            logger.info("✅ Lightweight model trained successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to train model: {e}")
-            # Create an even simpler fallback
-            try:
-                logger.info("Creating ultra-simple fallback model...")
-                simple_X = [[0.05, 0.01, 0.0, 0.0, 0.1], [0.1, 0.02, 0.01, 0.1, 0.2], [0.02, 0.005, -0.01, -0.1, 0.05]]
-                simple_y = [0, 1, -1]
-                
-                self.model = RandomForestClassifier(n_estimators=1, max_depth=1, random_state=42)
-                self.model.fit(simple_X, simple_y)
-                self.is_model_fitted = True
-                logger.info("✅ Fallback model created")
-            except Exception as fallback_error:
-                logger.error(f"Even fallback model failed: {fallback_error}")
-                raise
+        """No-op - using rule-based predictor instead of ML"""
+        logger.info("Simple rule-based predictor - no model training needed")
+        pass
 
     def predict_movement(self, coin_id):
-        """Predict price movement with error handling"""
+        """Predict using simple rules instead of ML"""
         try:
-            # Initialize components if needed
-            if not self.is_scaler_fitted:
-                self.fit_scaler()
-            
-            if not self.is_model_fitted:
-                self.fit_model()
-            
-            # Get features
-            features = self.get_analysis_features(coin_id, lookback_hours=3)  # Shorter lookback
+            # Get features (this should work now without pandas)
+            features = self.get_analysis_features(coin_id, lookback_hours=2)
             if features is None:
                 features = self._get_fallback_features()
-                
-            feature_array = np.array([[
-                features['price_volatility'],
-                features['volume_change'],
-                features['price_momentum'],
-                features['avg_sentiment'],
-                features['sentiment_volatility']
-            ]])
             
-            # Make prediction
-            try:
-                scaled_features = self.scaler.transform(feature_array)
-                prediction = self.model.predict(scaled_features)[0]
-                probabilities = self.model.predict_proba(scaled_features)[0]
-                confidence = float(max(probabilities))
-            except Exception as pred_error:
-                logger.warning(f"Prediction error for {coin_id}: {pred_error}")
-                prediction = 0
-                confidence = 0.33
-            
-            # Clean up
-            del feature_array
-            gc.collect()
+            # Use simple predictor
+            prediction, confidence = self.predictor.predict(features)
             
             return {
                 'prediction': int(prediction),
-                'confidence': confidence,
+                'confidence': float(confidence),
                 'features': features
             }
             
         except Exception as e:
-            logger.error(f"Failed to predict movement for {coin_id}: {e}")
+            logger.error(f"Prediction failed for {coin_id}: {e}")
             return {
                 'prediction': 0,
                 'confidence': 0.33,
                 'features': self._get_fallback_features()
             }
+
+# Alias for backward compatibility
+CryptoAnalyzer = CryptoDataManager
