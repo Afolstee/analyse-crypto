@@ -247,6 +247,20 @@ def health_check():
         'model_ready': analyzer.is_scaler_fitted,
         'supported_coins': coin_ids
     })
+    
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        'message': 'Crypto Analysis API is running',
+        'status': 'active',
+        'endpoints': {
+            'crypto_data': '/crypto-data',
+            'crypto_stream': '/crypto-stream', 
+            'health_check': '/health'
+        },
+        'model_ready': analyzer.is_scaler_fitted,
+        'supported_coins': coin_ids
+    })
 
 if __name__ == "__main__":
     # Get port and debug settings from environment
