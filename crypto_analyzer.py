@@ -195,31 +195,61 @@ class CryptoDataManager:
                 logger.warning(f"Insufficient price data for {coin_id}: {len(price_df)} records")
                 return None
                     
-            # Process data with error handling
+            # Process data with error handling and memory optimization
             try:
-                price_df['timestamp'] = pd.to_datetime(price_df['timestamp'], format='%Y-%m-%d %H:%M:%S')
+                # Convert timestamps more efficiently
+                if len(price_df) > 0:
+                    price_df['timestamp'] = pd.to_datetime(price_df['timestamp'], 
+                                                         format='%Y-%m-%d %H:%M:%S', 
+                                                         errors='coerce')
+                
                 if len(news_df) > 0:
-                    news_df['timestamp'] = pd.to_datetime(news_df['timestamp'])
+                    # Limit news data to prevent memory issues
+                    if len(news_df) > 100:  # Limit to 100 most recent news items
+                        news_df = news_df.tail(100)
+                    
+                    news_df['timestamp'] = pd.to_datetime(news_df['timestamp'], 
+                                                        format='%Y-%m-%d %H:%M:%S', 
+                                                        errors='coerce')
+                    # Drop rows with invalid timestamps
+                    news_df = news_df.dropna(subset=['timestamp'])
+                
             except Exception as e:
                 logger.error(f"Failed to parse timestamps: {e}")
                 return None
                     
-            # Calculate features with safe operations
-            features = {
-                'price_volatility': float(price_df['price'].std()) if len(price_df) > 1 else 0.0,
-                'volume_change': float(price_df['volume'].pct_change().mean()) if len(price_df) > 1 else 0.0,
-                'price_momentum': float(price_df['price'].diff().mean()) if len(price_df) > 1 else 0.0,
-                'avg_sentiment': float(news_df['sentiment'].mean()) if len(news_df) > 0 else 0.0,
-                'sentiment_volatility': float(news_df['sentiment'].std()) if len(news_df) > 1 else 0.0
-            }
-            
-            # Replace NaN values with 0
-            for key, value in features.items():
-                if pd.isna(value) or np.isnan(value):
-                    features[key] = 0.0
-            
-            logger.info(f"Generated features for {coin_id}: {features}")
-            return features
+            # Calculate features with safe operations and bounds checking
+            try:
+                # Ensure we have valid data before calculations
+                price_values = price_df['price'].dropna()
+                volume_values = price_df['volume'].dropna()
+                
+                features = {
+                    'price_volatility': float(price_values.std()) if len(price_values) > 1 else 0.0,
+                    'volume_change': float(volume_values.pct_change().mean()) if len(volume_values) > 1 else 0.0,
+                    'price_momentum': float(price_values.diff().mean()) if len(price_values) > 1 else 0.0,
+                    'avg_sentiment': 0.0,
+                    'sentiment_volatility': 0.0
+                }
+                
+                # Only calculate sentiment if we have valid news data
+                if len(news_df) > 0:
+                    sentiment_values = news_df['sentiment'].dropna()
+                    if len(sentiment_values) > 0:
+                        features['avg_sentiment'] = float(sentiment_values.mean())
+                        features['sentiment_volatility'] = float(sentiment_values.std()) if len(sentiment_values) > 1 else 0.0
+                
+                # Replace any remaining NaN or infinite values
+                for key, value in features.items():
+                    if pd.isna(value) or np.isnan(value) or np.isinf(value):
+                        features[key] = 0.0
+                
+                logger.info(f"Generated features for {coin_id}: {features}")
+                return features
+                
+            except Exception as e:
+                logger.error(f"Failed to calculate features: {e}")
+                return None
             
         except Exception as e:
             logger.error(f"Error in get_analysis_features for {coin_id}: {e}")
@@ -277,36 +307,44 @@ class CryptoDataManager:
             raise
 
     def fit_model(self):
-        """Fit the RandomForestClassifier with historical data"""
+        """Fit the RandomForestClassifier with historical data - optimized for memory usage"""
         try:
             conn = self.get_db_connection()
             
             historical_data = []
             labels = []
+            max_samples_per_coin = 20  # Drastically reduced to prevent timeout
             
             for coin_id in self.coin_ids:
                 try:
+                    # Get only recent data to reduce memory usage
                     price_df = pd.read_sql_query('''
                         SELECT * FROM price_history 
                         WHERE coin_id = ?
                         ORDER BY timestamp DESC
-                        LIMIT 1000
+                        LIMIT 100
                     ''', conn, params=(coin_id,))
                     
-                    if len(price_df) < 2:
+                    if len(price_df) < 3:  # Need at least 3 records
+                        logger.warning(f"Insufficient data for {coin_id}: {len(price_df)} records")
                         continue
                         
                     price_df['return'] = price_df['price'].pct_change()
-                    
                     price_df['label'] = np.where(price_df['return'] > 0.01, 1,
                                                np.where(price_df['return'] < -0.01, -1, 0))
                     
-                    # Limit the number of samples to prevent timeout
-                    sample_size = min(50, len(price_df) - 1)
-                    for i in range(sample_size):
+                    # Process only a small sample to prevent timeout
+                    sample_size = min(max_samples_per_coin, len(price_df) - 1)
+                    processed_count = 0
+                    
+                    for i in range(0, sample_size, 2):  # Skip every other sample
+                        if processed_count >= 10:  # Hard limit per coin
+                            break
+                            
                         try:
+                            # Use shorter lookback to speed up processing
                             features = self.get_analysis_features(coin_id, 
-                                                               lookback_hours=12,  # Reduced lookback
+                                                               lookback_hours=6,  # Very short lookback
                                                                end_time=price_df.iloc[i]['timestamp'])
                             if features:
                                 historical_data.append([
@@ -317,9 +355,12 @@ class CryptoDataManager:
                                     features['sentiment_volatility']
                                 ])
                                 labels.append(price_df.iloc[i+1]['label'])
+                                processed_count += 1
                         except Exception as e:
                             logger.warning(f"Failed to process sample {i} for {coin_id}: {e}")
                             continue
+                            
+                    logger.info(f"Processed {processed_count} samples for {coin_id}")
                             
                 except Exception as e:
                     logger.warning(f"Failed to process {coin_id}: {e}")
@@ -327,12 +368,20 @@ class CryptoDataManager:
             
             conn.close()
             
-            if len(historical_data) == 0:
-                logger.warning("No historical data available to train the model.")
+            if len(historical_data) < 5:  # Need minimum samples
+                logger.warning(f"Insufficient training data: {len(historical_data)} samples")
                 return False
             
             X = np.array(historical_data)
             y = np.array(labels)
+            
+            # Use a simpler model configuration for faster training
+            self.model = RandomForestClassifier(
+                n_estimators=50,  # Reduced from 100
+                max_depth=10,     # Limit depth
+                random_state=42,
+                n_jobs=1          # Single thread to control memory
+            )
             
             self.model.fit(X, y)
             logger.info(f"✅ Model trained successfully with {len(X)} samples.")
