@@ -3,15 +3,21 @@ from flask_cors import CORS
 import requests
 import json
 import time
+import os
 from threading import Thread
 from crypto_analyzer import CryptoDataManager
 
 app = Flask(__name__)
-CORS(app)
+
+# Environment-based CORS configuration
+allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
+CORS(app, origins=allowed_origins)
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
 CRYPTOCOMPARE_NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/"
-API_KEY = "095f087a120bf715fc109915bd8c6f237656caeef95300672772ab9bb5fea890"
+
+# Use environment variable for API key
+API_KEY = os.environ.get('API_KEY', '095f087a120bf715fc109915bd8c6f237656caeef95300672772ab9bb5fea890')
 
 coin_ids = ["bitcoin", "trump", "ethereum", "solana", "cardano", "dogecoin", "ripple", "polkadot", "litecoin", "chainlink", "uniswap"]
 
@@ -243,6 +249,10 @@ def health_check():
     })
 
 if __name__ == "__main__":
+    # Get port and debug settings from environment
+    port = int(os.environ.get('PORT', 5000))
+    debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    
     print("Initializing analyzer...")
     # Start analyzer initialization in a separate thread
     init_thread = Thread(target=initialize_analyzer)
@@ -250,4 +260,4 @@ if __name__ == "__main__":
     init_thread.start()
     
     # Start the Flask app
-    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)
+    app.run(host="0.0.0.0", port=port, debug=debug, threaded=True)
