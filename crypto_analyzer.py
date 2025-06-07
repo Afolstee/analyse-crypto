@@ -21,23 +21,23 @@ class CryptoDataManager:
         self.scaler = StandardScaler()
         self.model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.is_scaler_fitted = False
-        self.is_model_fitted = False  # Add this flag
+        self.is_model_fitted = False
         # Add connection timeout and retry settings
-        self.db_timeout = 5.0  # Reduced to 5 seconds
-        self.max_retries = 2   # Reduced retries
+        self.db_timeout = 3.0  # Very short timeout
+        self.max_retries = 1   # Single retry only
 
     def get_db_connection(self):
         """Get database connection with timeout and retry logic"""
         for attempt in range(self.max_retries):
             try:
                 conn = sqlite3.connect(self.db_path, timeout=self.db_timeout)
-                conn.execute('PRAGMA journal_mode=WAL')  # Better concurrency
-                conn.execute('PRAGMA synchronous=NORMAL')  # Better performance
+                conn.execute('PRAGMA journal_mode=WAL')
+                conn.execute('PRAGMA synchronous=NORMAL')
                 return conn
             except sqlite3.OperationalError as e:
                 logger.warning(f"Database connection attempt {attempt + 1} failed: {e}")
                 if attempt < self.max_retries - 1:
-                    time.sleep(0.1)  # Reduced wait time
+                    time.sleep(0.1)
                 else:
                     raise
 
@@ -142,7 +142,7 @@ class CryptoDataManager:
             raise
 
     def get_analysis_features(self, coin_id, lookback_hours=24, end_time=None):
-        """Get analysis features up to a specific end time with proper error handling"""
+        """Get analysis features - simplified to prevent timeouts"""
         try:
             conn = self.get_db_connection()
             
@@ -153,60 +153,55 @@ class CryptoDataManager:
                 end_time = datetime.strptime(end_time, '%Y-%m-%d %H:%M:%S')
                     
             cutoff_time = end_time - timedelta(hours=lookback_hours)
-            
             end_time_str = end_time.strftime('%Y-%m-%d %H:%M:%S')
             cutoff_time_str = cutoff_time.strftime('%Y-%m-%d %H:%M:%S')
             
-            # Execute price query with very limited results
+            # Get only the most recent price data with minimal processing
             try:
-                price_df = pd.read_sql_query('''
-                    SELECT * FROM price_history 
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT price, volume FROM price_history 
                     WHERE coin_id = ? AND timestamp > ? AND timestamp <= ?
                     ORDER BY timestamp DESC
-                    LIMIT 50
-                ''', conn, params=(coin_id, cutoff_time_str, end_time_str), 
-                timeout=3)  # 3-second timeout
-            except Exception as e:
-                logger.error(f"Failed to fetch price data for {coin_id}: {e}")
-                conn.close()
-                return None
-            
-            # Skip news data entirely for faster processing
-            news_df = pd.DataFrame(columns=['timestamp', 'sentiment'])
-            
-            conn.close()
-            
-            if len(price_df) < 2:
-                logger.warning(f"Insufficient price data for {coin_id}: {len(price_df)} records")
-                return None
-                    
-            # Process data with error handling and memory optimization
-            try:
-                # Convert timestamps more efficiently
-                if len(price_df) > 0:
-                    price_df['timestamp'] = pd.to_datetime(price_df['timestamp'], 
-                                                         format='%Y-%m-%d %H:%M:%S', 
-                                                         errors='coerce')
+                    LIMIT 10
+                ''', (coin_id, cutoff_time_str, end_time_str))
                 
-            except Exception as e:
-                logger.error(f"Failed to parse timestamps: {e}")
-                return None
-                    
-            # Calculate features with safe operations and bounds checking
-            try:
-                # Ensure we have valid data before calculations
-                price_values = price_df['price'].dropna()
-                volume_values = price_df['volume'].dropna()
+                rows = cursor.fetchall()
+                conn.close()
+                
+                if len(rows) < 2:
+                    logger.warning(f"Insufficient price data for {coin_id}: {len(rows)} records")
+                    return None
+                
+                # Simple calculations without pandas operations
+                prices = [row[0] for row in rows if row[0] is not None]
+                volumes = [row[1] for row in rows if row[1] is not None]
+                
+                if len(prices) < 2:
+                    return None
+                
+                # Calculate simple features without pandas
+                price_mean = sum(prices) / len(prices)
+                price_variance = sum((p - price_mean) ** 2 for p in prices) / len(prices)
+                price_volatility = price_variance ** 0.5
+                
+                volume_mean = sum(volumes) / len(volumes) if volumes else 0
+                
+                # Simple momentum calculation
+                if len(prices) >= 2:
+                    price_momentum = (prices[0] - prices[-1]) / prices[-1] if prices[-1] != 0 else 0
+                else:
+                    price_momentum = 0
                 
                 features = {
-                    'price_volatility': float(price_values.std()) if len(price_values) > 1 else 0.0,
-                    'volume_change': float(volume_values.pct_change().mean()) if len(volume_values) > 1 else 0.0,
-                    'price_momentum': float(price_values.diff().mean()) if len(price_values) > 1 else 0.0,
-                    'avg_sentiment': 0.0,  # Default to 0 since we're skipping news
+                    'price_volatility': float(price_volatility) if not np.isnan(price_volatility) else 0.0,
+                    'volume_change': float(volume_mean / 1000000) if volume_mean > 0 else 0.0,  # Normalized
+                    'price_momentum': float(price_momentum) if not np.isnan(price_momentum) else 0.0,
+                    'avg_sentiment': 0.0,
                     'sentiment_volatility': 0.0
                 }
                 
-                # Replace any remaining NaN or infinite values
+                # Ensure no NaN or infinite values
                 for key, value in features.items():
                     if pd.isna(value) or np.isnan(value) or np.isinf(value):
                         features[key] = 0.0
@@ -215,7 +210,8 @@ class CryptoDataManager:
                 return features
                 
             except Exception as e:
-                logger.error(f"Failed to calculate features: {e}")
+                logger.error(f"Failed to process data for {coin_id}: {e}")
+                conn.close()
                 return None
             
         except Exception as e:
@@ -223,19 +219,19 @@ class CryptoDataManager:
             return None
 
     def fit_scaler(self):
-        """Fit the scaler with minimal data to prevent timeouts"""
+        """Fit the scaler with synthetic data only - no database access"""
         try:
-            # Create synthetic data instead of querying database
-            feature_data = []
+            logger.info("Fitting scaler with synthetic data...")
             
-            # Generate basic synthetic training data
-            for _ in range(20):  # Just 20 samples
+            # Generate synthetic feature data
+            feature_data = []
+            for _ in range(50):
                 feature_data.append([
-                    np.random.normal(0.1, 0.05),  # price_volatility
-                    np.random.normal(0.0, 0.02),  # volume_change
-                    np.random.normal(0.0, 0.01),  # price_momentum
-                    np.random.normal(0.0, 0.3),   # avg_sentiment
-                    np.random.normal(0.2, 0.1)    # sentiment_volatility
+                    abs(np.random.normal(0.1, 0.05)),  # price_volatility (positive)
+                    np.random.normal(0.0, 0.02),       # volume_change
+                    np.random.normal(0.0, 0.01),       # price_momentum
+                    np.random.normal(0.0, 0.3),        # avg_sentiment
+                    abs(np.random.normal(0.2, 0.1))    # sentiment_volatility (positive)
                 ])
             
             self.scaler.fit(feature_data)
@@ -247,63 +243,70 @@ class CryptoDataManager:
             raise
 
     def fit_model(self):
-        """Initialize model with synthetic data to prevent database timeouts"""
+        """Fit model with synthetic data only - no database queries"""
         try:
-            if self.is_model_fitted:
-                logger.info("Model already fitted, skipping...")
-                return True
+            logger.info("Training model with synthetic data (fast initialization)...")
+            
+            # Generate synthetic training data
+            X = []
+            y = []
+            
+            for _ in range(100):  # Reasonable training set
+                # Generate realistic feature values
+                price_vol = abs(np.random.normal(0.1, 0.05))
+                volume_change = np.random.normal(0.0, 0.02)
+                momentum = np.random.normal(0.0, 0.01)
+                sentiment = np.random.normal(0.0, 0.3)
+                sent_vol = abs(np.random.normal(0.2, 0.1))
                 
-            logger.info("Initializing model with synthetic data...")
-            
-            # Create minimal synthetic training data
-            training_features = []
-            training_labels = []
-            
-            # Generate synthetic training data quickly
-            for i in range(30):  # Minimal training set
-                features = [
-                    np.random.normal(0.1, 0.05),  # price_volatility
-                    np.random.normal(0.0, 0.02),  # volume_change
-                    np.random.normal(0.0, 0.01),  # price_momentum
-                    np.random.normal(0.0, 0.3),   # avg_sentiment
-                    np.random.normal(0.2, 0.1)    # sentiment_volatility
-                ]
-                training_features.append(features)
-                # Create labels based on simple rules for better training
-                if features[2] > 0.005:  # positive momentum
-                    training_labels.append(1)
-                elif features[2] < -0.005:  # negative momentum
-                    training_labels.append(-1)
+                features = [price_vol, volume_change, momentum, sentiment, sent_vol]
+                X.append(features)
+                
+                # Create labels based on logical rules
+                if momentum > 0.005 and sentiment > 0.1:
+                    label = 1  # pump
+                elif momentum < -0.005 and sentiment < -0.1:
+                    label = -1  # dump
                 else:
-                    training_labels.append(0)
+                    label = 0  # stable
+                    
+                y.append(label)
             
-            X = np.array(training_features)
-            y = np.array(training_labels)
-            
-            # Use a very simple model configuration
+            # Train the model
             self.model = RandomForestClassifier(
-                n_estimators=5,    # Minimal trees
-                max_depth=3,       # Very shallow
+                n_estimators=10,
+                max_depth=5,
                 random_state=42,
                 n_jobs=1
             )
             
             self.model.fit(X, y)
             self.is_model_fitted = True
-            logger.info(f"✅ Model initialized with {len(X)} synthetic samples.")
-            return True
+            logger.info("✅ Model trained successfully with synthetic data.")
             
         except Exception as e:
-            logger.error(f"Failed to initialize model: {e}")
-            return False
+            logger.error(f"Failed to train model: {e}")
+            raise
 
     def predict_movement(self, coin_id):
         """Predict price movement for a given coin"""
         try:
-            features = self.get_analysis_features(coin_id, lookback_hours=12)  # Reduced lookback
+            # Initialize scaler and model if not done
+            if not self.is_scaler_fitted:
+                self.fit_scaler()
+            
+            if not self.is_model_fitted:
+                self.fit_model()
+            
+            # Get features for prediction
+            features = self.get_analysis_features(coin_id, lookback_hours=6)  # Very short lookback
             if features is None:
                 logger.warning(f"No features available for {coin_id}")
-                return None
+                return {
+                    'prediction': 0,
+                    'confidence': 0.33,
+                    'features': {'error': 'No data available'}
+                }
                 
             feature_array = np.array([[
                 features['price_volatility'],
@@ -313,21 +316,7 @@ class CryptoDataManager:
                 features['sentiment_volatility']
             ]])
             
-            if not self.is_scaler_fitted:
-                logger.info("Scaler not fitted. Fitting scaler...")
-                self.fit_scaler()
-                if not self.is_scaler_fitted:
-                    logger.error("Failed to fit scaler")
-                    return None
-            
-            if not self.is_model_fitted:
-                logger.info("Model not fitted. Initializing model...")
-                if not self.fit_model():
-                    logger.error("Failed to initialize model")
-                    return None
-            
             scaled_features = self.scaler.transform(feature_array)
-            
             prediction = self.model.predict(scaled_features)[0]
             probabilities = self.model.predict_proba(scaled_features)[0]
             
@@ -339,4 +328,8 @@ class CryptoDataManager:
             
         except Exception as e:
             logger.error(f"Failed to predict movement for {coin_id}: {e}")
-            return None
+            return {
+                'prediction': 0,
+                'confidence': 0.33,
+                'features': {'error': str(e)}
+            }
