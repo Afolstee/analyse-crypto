@@ -11,8 +11,14 @@ from datetime import datetime, timedelta
 app = Flask(__name__)
 
 # Environment-based CORS configuration
-allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')
-CORS(app, origins=allowed_origins)
+allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:3000,https://analyse-crypto-nine.vercel.app').split(',')
+
+# Also add flexible CORS for development and production
+CORS(app, 
+     origins=allowed_origins,
+     allow_headers=['Content-Type', 'Authorization', 'Accept'],
+     methods=['GET', 'POST', 'OPTIONS'],
+     supports_credentials=True)
 
 COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
 CRYPTOCOMPARE_NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/"
@@ -465,14 +471,17 @@ def crypto_stream():
                 time.sleep(10)
 
     return Response(
-        generate(),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Transfer-Encoding": "chunked",
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
+    generate(),
+    mimetype="text/event-stream",
+    headers={
+        "Cache-Control": "no-cache",
+        "Transfer-Encoding": "chunked",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+        "Connection": "keep-alive"
+    }
+)
 
 @app.route("/health", methods=["GET"])
 def health_check():
