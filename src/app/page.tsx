@@ -828,10 +828,7 @@ const EnhancedNewsComponent = () => {
       setLoading(true);
       setError(null);
 
-      // Use your external API instead of local routes
-      const response = await fetch(
-        `${API_CONFIG.baseUrl}${API_CONFIG.endpoints.news}?page=${page}&per_page=10`
-      );
+      const response = await fetch('/api/news?page=1&per_page=10');
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
