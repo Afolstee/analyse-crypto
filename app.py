@@ -1,11 +1,12 @@
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
 import requests
 import json
 import time
 import os
-from threading import Thread
+from threading import Thread, Lock
 from crypto_analyzer import CryptoDataManager
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -38,6 +39,24 @@ COIN_SYMBOL_MAP = {
 
 # Initialize the analyzer
 analyzer = CryptoDataManager(coin_ids=coin_ids)
+
+# News caching system
+news_cache = {
+    'data': [],
+    'last_updated': None,
+    'lock': Lock()
+}
+
+CACHE_DURATION_HOURS = 12
+NEWS_REFRESH_INTERVAL = 12 * 60 * 60  # 12 hours in seconds
+
+def is_cache_expired():
+    """Check if news cache is expired (older than 12 hours)"""
+    if news_cache['last_updated'] is None:
+        return True
+    
+    time_diff = datetime.now() - news_cache['last_updated']
+    return time_diff.total_seconds() > (CACHE_DURATION_HOURS * 3600)
 
 def fetch_price_data():
     """Enhanced price fetching with better error handling and debugging"""
@@ -134,8 +153,8 @@ def fetch_fallback_prices():
     print(f"✅ Generated {len(fallback_data)} fallback price records")
     return fallback_data
 
-def fetch_news():
-    """Fetch news from CryptoCompare API"""
+def fetch_news_from_api():
+    """Fetch fresh news from CryptoCompare API"""
     # Get symbols for the coins we're tracking
     symbols = [COIN_SYMBOL_MAP.get(coin_id, coin_id.upper()) for coin_id in coin_ids]
     
@@ -144,11 +163,11 @@ def fetch_news():
         "categories": ",".join(symbols),
         "excludeCategories": "Sponsored",
         "sortOrder": "latest",
-        "limit": 50
+        "limit": 100  # Fetch more to ensure we have 50+ recent articles
     }
     
     try:
-        print(f"🔄 Fetching news from: {CRYPTOCOMPARE_NEWS_URL}")
+        print(f"🔄 Fetching fresh news from: {CRYPTOCOMPARE_NEWS_URL}")
         response = requests.get(CRYPTOCOMPARE_NEWS_URL, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
@@ -160,18 +179,27 @@ def fetch_news():
             
             # Transform CryptoCompare news format to match our expected format
             transformed_news = []
+            current_time = int(time.time())
+            twenty_four_hours_ago = current_time - (24 * 60 * 60)
+            
             for article in news_data:
+                published_time = article.get('published_on', 0)
+                
+                # Only include articles from last 24 hours for freshness
+                if published_time < twenty_four_hours_ago:
+                    continue
+                    
                 transformed_article = {
                     'id': article.get('id', ''),
                     'title': article.get('title', ''),
                     'url': article.get('url', ''),
-                    'published_at': article.get('published_on', 0),
+                    'published_at': published_time,
                     'source': {
                         'title': article.get('source_info', {}).get('name', 'Unknown'),
                         'domain': article.get('source', '')
                     },
                     'summary': article.get('body', '')[:200] + '...' if len(article.get('body', '')) > 200 else article.get('body', ''),
-                    'currencies': []  # CryptoCompare doesn't provide this directly
+                    'currencies': []
                 }
                 
                 # Try to extract relevant currencies from categories or tags
@@ -187,7 +215,11 @@ def fetch_news():
                 
                 transformed_news.append(transformed_article)
             
-            return transformed_news
+            # Sort by published time (most recent first)
+            transformed_news.sort(key=lambda x: x['published_at'], reverse=True)
+            
+            # Keep only top 50 most recent articles
+            return transformed_news[:50]
         else:
             print(f"❌ CryptoCompare API error: {data.get('Message', 'Unknown error')}")
             return []
@@ -199,6 +231,52 @@ def fetch_news():
             print(f"Response: {e.response.text[:300]}...")
         return []
 
+def get_cached_news():
+    """Get news from cache or fetch fresh if expired"""
+    with news_cache['lock']:
+        if is_cache_expired():
+            print("🔄 News cache expired, fetching fresh news...")
+            fresh_news = fetch_news_from_api()
+            if fresh_news:
+                news_cache['data'] = fresh_news
+                news_cache['last_updated'] = datetime.now()
+                print(f"✅ Updated news cache with {len(fresh_news)} articles")
+            else:
+                print("⚠️ Failed to fetch fresh news, using existing cache")
+        else:
+            print(f"✅ Using cached news ({len(news_cache['data'])} articles)")
+        
+        return news_cache['data'].copy()
+
+def paginate_news(news_list, page=1, per_page=10):
+    """Paginate news list"""
+    total_items = len(news_list)
+    total_pages = (total_items + per_page - 1) // per_page  # Ceiling division
+    
+    if page < 1:
+        page = 1
+    elif page > total_pages:
+        page = total_pages if total_pages > 0 else 1
+    
+    start_index = (page - 1) * per_page
+    end_index = start_index + per_page
+    
+    paginated_news = news_list[start_index:end_index]
+    
+    return {
+        'news': paginated_news,
+        'pagination': {
+            'current_page': page,
+            'per_page': per_page,
+            'total_items': total_items,
+            'total_pages': total_pages,
+            'has_next': page < total_pages,
+            'has_prev': page > 1,
+            'next_page': page + 1 if page < total_pages else None,
+            'prev_page': page - 1 if page > 1 else None
+        }
+    }
+
 def create_analysis_response(prices, news, analyzer):
     """Create response with price, news, and analysis data"""
     print(f"🔧 Creating response with {len(prices)} prices and {len(news)} news articles")
@@ -207,7 +285,12 @@ def create_analysis_response(prices, news, analyzer):
         'prices': prices,
         'news': news,
         'analysis': {},
-        'model_ready': getattr(analyzer, 'is_scaler_fitted', True),  # Default to True for simple predictor
+        'model_ready': getattr(analyzer, 'is_scaler_fitted', True),
+        'news_cache_info': {
+            'last_updated': news_cache['last_updated'].isoformat() if news_cache['last_updated'] else None,
+            'is_fresh': not is_cache_expired(),
+            'next_refresh': (news_cache['last_updated'] + timedelta(hours=12)).isoformat() if news_cache['last_updated'] else None
+        },
         'debug': {
             'price_count': len(prices),
             'news_count': len(news),
@@ -228,6 +311,17 @@ def create_analysis_response(prices, news, analyzer):
     print(f"✅ Response created successfully")
     return response
 
+def news_refresh_worker():
+    """Background worker to refresh news every 12 hours"""
+    while True:
+        try:
+            time.sleep(NEWS_REFRESH_INTERVAL)  # Wait 12 hours
+            print("🔄 Background news refresh triggered")
+            get_cached_news()  # This will refresh if needed
+        except Exception as e:
+            print(f"❌ Error in news refresh worker: {e}")
+            time.sleep(300)  # Wait 5 minutes before retrying
+
 def initialize_analyzer():
     """Initialize the analyzer with any available data"""
     retry_count = 0
@@ -237,7 +331,7 @@ def initialize_analyzer():
         try:
             print(f"Attempting to initialize analyzer (attempt {retry_count + 1}/{max_retries})...")
             prices = fetch_price_data()
-            news = fetch_news()
+            news = get_cached_news()  # Use cached news system
             
             if prices:
                 if hasattr(analyzer, 'store_price_data'):
@@ -272,26 +366,68 @@ def get_crypto_data():
     try:
         print("🔄 /crypto-data endpoint called")
         prices = fetch_price_data()
-        news = fetch_news()
         
-        print(f"📊 Fetched {len(prices)} prices and {len(news)} news articles")
+        # Get pagination parameters
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 10))
+        
+        # Get cached news and paginate
+        all_news = get_cached_news()
+        paginated_result = paginate_news(all_news, page, per_page)
+        
+        print(f"📊 Fetched {len(prices)} prices and {len(paginated_result['news'])} paginated news articles")
         
         # Store data for analysis
         if prices and hasattr(analyzer, 'store_price_data'):
             analyzer.store_price_data(prices)
-        if news and hasattr(analyzer, 'store_news_data'):
-            analyzer.store_news_data(news)
+        if all_news and hasattr(analyzer, 'store_news_data'):
+            analyzer.store_news_data(all_news)
         
         # Generate response with analysis
-        response = create_analysis_response(prices, news, analyzer)
+        response = create_analysis_response(prices, paginated_result['news'], analyzer)
+        response['pagination'] = paginated_result['pagination']
         
-        print(f"✅ Returning response with {len(response['prices'])} prices")
+        print(f"✅ Returning response with {len(response['prices'])} prices and pagination info")
         return jsonify(response)
     except Exception as e:
         print(f"❌ Error in get_crypto_data: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e), 'prices': [], 'news': []}), 500
+        return jsonify({'error': str(e), 'prices': [], 'news': [], 'pagination': None}), 500
+
+@app.route("/news", methods=["GET"])
+def get_news_only():
+    """Dedicated endpoint for news with pagination"""
+    try:
+        print("🔄 /news endpoint called")
+        
+        # Get pagination parameters
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 10))
+        
+        # Get cached news and paginate
+        all_news = get_cached_news()
+        paginated_result = paginate_news(all_news, page, per_page)
+        
+        response = {
+            'news': paginated_result['news'],
+            'pagination': paginated_result['pagination'],
+            'cache_info': {
+                'last_updated': news_cache['last_updated'].isoformat() if news_cache['last_updated'] else None,
+                'is_fresh': not is_cache_expired(),
+                'next_refresh': (news_cache['last_updated'] + timedelta(hours=12)).isoformat() if news_cache['last_updated'] else None
+            },
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        print(f"✅ Returning {len(paginated_result['news'])} news articles (page {page})")
+        return jsonify(response)
+        
+    except Exception as e:
+        print(f"❌ Error in get_news_only: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'news': [], 'pagination': None}), 500
 
 @app.route("/crypto-stream")
 def crypto_stream():
@@ -303,16 +439,20 @@ def crypto_stream():
             try:
                 print("🔄 Streaming data...")
                 prices = fetch_price_data()
-                news = fetch_news()
+                
+                # For streaming, get first page of news
+                all_news = get_cached_news()
+                paginated_result = paginate_news(all_news, 1, 10)
                 
                 # Store and analyze data
                 if prices and hasattr(analyzer, 'store_price_data'):
                     analyzer.store_price_data(prices)
-                if news and hasattr(analyzer, 'store_news_data'):
-                    analyzer.store_news_data(news)
+                if all_news and hasattr(analyzer, 'store_news_data'):
+                    analyzer.store_news_data(all_news)
                 
                 # Generate response with analysis
-                response = create_analysis_response(prices, news, analyzer)
+                response = create_analysis_response(prices, paginated_result['news'], analyzer)
+                response['pagination'] = paginated_result['pagination']
                 yield f"data: {json.dumps(response)}\n\n"
                 
                 error_count = 0  # Reset error count on success
@@ -321,7 +461,7 @@ def crypto_stream():
             except Exception as e:
                 error_count += 1
                 print(f"❌ Error in stream (attempt {error_count}): {e}")
-                yield f"data: {json.dumps({'error': str(e), 'prices': [], 'news': []})}\n\n"
+                yield f"data: {json.dumps({'error': str(e), 'prices': [], 'news': [], 'pagination': None})}\n\n"
                 time.sleep(10)
 
     return Response(
@@ -340,6 +480,11 @@ def health_check():
         'status': 'healthy',
         'model_ready': getattr(analyzer, 'is_scaler_fitted', True),
         'supported_coins': coin_ids,
+        'news_cache_status': {
+            'articles_count': len(news_cache['data']),
+            'last_updated': news_cache['last_updated'].isoformat() if news_cache['last_updated'] else None,
+            'is_fresh': not is_cache_expired()
+        },
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
     })
 
@@ -364,6 +509,34 @@ def debug_prices():
             'error': str(e),
             'traceback': traceback.format_exc()
         }), 500
+
+@app.route("/refresh-news", methods=["POST"])
+def force_refresh_news():
+    """Manual endpoint to force news refresh"""
+    try:
+        print("🔄 Manual news refresh triggered")
+        with news_cache['lock']:
+            fresh_news = fetch_news_from_api()
+            if fresh_news:
+                news_cache['data'] = fresh_news
+                news_cache['last_updated'] = datetime.now()
+                return jsonify({
+                    'success': True,
+                    'message': f'News refreshed successfully with {len(fresh_news)} articles',
+                    'articles_count': len(fresh_news),
+                    'timestamp': datetime.now().isoformat()
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to fetch fresh news'
+                }), 500
+    except Exception as e:
+        print(f"❌ Error in force refresh: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
     
 @app.route("/", methods=["GET"])
 def home():
@@ -371,13 +544,20 @@ def home():
         'message': 'Crypto Analysis API is running',
         'status': 'active',
         'endpoints': {
-            'crypto_data': '/crypto-data',
+            'crypto_data': '/crypto-data?page=1&per_page=10',
+            'news_only': '/news?page=1&per_page=10',
             'crypto_stream': '/crypto-stream', 
             'health_check': '/health',
-            'debug_prices': '/debug-prices'
+            'debug_prices': '/debug-prices',
+            'refresh_news': '/refresh-news (POST)'
         },
         'model_ready': getattr(analyzer, 'is_scaler_fitted', True),
         'supported_coins': coin_ids,
+        'news_info': {
+            'cache_articles': len(news_cache['data']),
+            'last_updated': news_cache['last_updated'].isoformat() if news_cache['last_updated'] else None,
+            'refresh_interval': f'{CACHE_DURATION_HOURS} hours'
+        },
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
     })
 
@@ -386,11 +566,16 @@ if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
-    print("🚀 Initializing analyzer...")
+    print("🚀 Initializing analyzer and news cache...")
     # Start analyzer initialization in a separate thread
     init_thread = Thread(target=initialize_analyzer)
     init_thread.daemon = True
     init_thread.start()
+    
+    # Start news refresh worker in background
+    news_worker = Thread(target=news_refresh_worker)
+    news_worker.daemon = True
+    news_worker.start()
     
     # Start the Flask app
     print(f"🌐 Starting Flask app on port {port}")

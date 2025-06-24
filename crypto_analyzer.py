@@ -138,7 +138,7 @@ class CryptoDataManager:
         pass
 
     def get_analysis_features(self, coin_id, lookback_hours=3, end_time=None):
-        """Get features without pandas - pure Python only"""
+        
         try:
             conn = self.get_db_connection()
             if conn is None:
@@ -207,7 +207,7 @@ class CryptoDataManager:
             return self._get_fallback_features()
 
     def _get_fallback_features(self):
-        """Return random but reasonable fallback features"""
+        
         return {
             'price_volatility': random.uniform(0.01, 0.1),
             'volume_change': random.uniform(0.001, 0.05),
@@ -217,19 +217,17 @@ class CryptoDataManager:
         }
 
     def fit_scaler(self):
-        """No-op - scaler not needed for simple predictor"""
+        
         logger.info("Simple predictor - no scaler needed")
         pass
 
     def fit_model(self):
-        """No-op - using rule-based predictor instead of ML"""
+        
         logger.info("Simple rule-based predictor - no model training needed")
         pass
 
     def predict_movement(self, coin_id):
-        """Predict using simple rules instead of ML"""
         try:
-            # Get features (this should work now without pandas)
             features = self.get_analysis_features(coin_id, lookback_hours=2)
             if features is None:
                 features = self._get_fallback_features()

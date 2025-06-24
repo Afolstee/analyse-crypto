@@ -1,13 +1,29 @@
-"use client"
+"use client";
 
-import { useEffect, useState } from 'react';
-import { useSSE } from '@/hooks/useSSE';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
-import { AlertCircle, Loader2, TrendingUp, TrendingDown, Activity, X, HelpCircle } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { motion } from 'framer-motion';
-import { API_CONFIG } from '@/config/api';
+import React, { useEffect, useState } from "react";
+import { useSSE } from "@/hooks/useSSE";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from "recharts";
+import {
+  AlertCircle,
+  Loader2,
+  TrendingUp,
+  TrendingDown,
+  Activity,
+  X,
+  HelpCircle,
+} from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Clock } from "lucide-react";
+import { motion } from "framer-motion";
+import { API_CONFIG } from "@/config/api";
+import { Button } from "@/components/ui/button";
 
 interface CryptoPrice {
   id: string;
@@ -18,10 +34,19 @@ interface CryptoPrice {
 }
 
 interface NewsItem {
+  id: string;
   title: string;
   url: string;
-  published_at: string;
-  currencies: { code: string }[];
+  published_at: number;
+  source: {
+    title: string;
+    domain: string;
+  };
+  summary: string;
+  currencies: Array<{
+    code: string;
+    title: string;
+  }>;
 }
 
 interface ChartData {
@@ -49,6 +74,36 @@ interface Analysis {
   timestamp?: number;
 }
 
+interface PaginationInfo {
+  current_page: number;
+  per_page: number;
+  total_items: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
+  next_page: number | null;
+  prev_page: number | null;
+}
+
+interface NewsData {
+  news: NewsItem[];
+  pagination: {
+    current_page: number;
+    per_page: number;
+    total_items: number;
+    total_pages: number;
+    has_next: boolean;
+    has_prev: boolean;
+    next_page: number | null;
+    prev_page: number | null;
+  };
+  cache_info: {
+    last_updated: string | null;
+    is_fresh: boolean;
+    next_refresh: string | null;
+  };
+  timestamp: string;
+}
 interface SSEResponse<T> {
   data: T | null;
   isConnected: boolean;
@@ -57,9 +112,15 @@ interface SSEResponse<T> {
 }
 
 // Custom tooltip component for explanations
-const CustomTooltip = ({ text, children }: { text: string; children: React.ReactNode }) => {
+const CustomTooltip = ({
+  text,
+  children,
+}: {
+  text: string;
+  children: React.ReactNode;
+}) => {
   const [isVisible, setIsVisible] = useState(false);
-  
+
   return (
     <div className="relative inline-block">
       <div
@@ -80,34 +141,59 @@ const CustomTooltip = ({ text, children }: { text: string; children: React.React
 };
 
 // Safe date formatter to prevent hydration mismatches
-const formatDate = (date: Date | string | number) => {
-  try {
-    const d = new Date(date);
-    return d.toLocaleString();
-  } catch {
-    return 'Invalid Date';
+const formatDate = (timestamp: number | Date): string => {
+  if (typeof window === "undefined") {
+    // Server-side: return a placeholder or skip formatting
+    return "Loading...";
   }
+
+  const date =
+    timestamp instanceof Date ? timestamp : new Date(timestamp * 1000);
+  return date.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 };
 
+const formatRelativeTime = (timestamp: number): string => {
+  const now = Date.now();
+  const then = timestamp * 1000;
+  const diff = now - then;
+
+  const minutes = Math.floor(diff / (1000 * 60));
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+  if (minutes < 60) {
+    return `${minutes} minutes ago`;
+  } else if (hours < 24) {
+    return `${hours} hours ago`;
+  } else {
+    return `${days} days ago`;
+  }
+};
 // Safe time formatter
 const formatTime = (date: Date | string | number) => {
   try {
     const d = new Date(date);
     return d.toLocaleTimeString();
   } catch {
-    return 'Invalid Time';
+    return "Invalid Time";
   }
 };
 
 // Prediction Modal Component
-const PredictionModal = ({ 
-  isOpen, 
-  onClose, 
-  coin, 
-  analysis, 
+const PredictionModal = ({
+  isOpen,
+  onClose,
+  coin,
+  analysis,
   chartData,
-  modelReady 
-}: { 
+  modelReady,
+}: {
   isOpen: boolean;
   onClose: () => void;
   coin: CryptoPrice;
@@ -131,7 +217,7 @@ const PredictionModal = ({
 
   if (!modelReady || !analysis) {
     return (
-      <div 
+      <div
         className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
         onClick={handleBackdropClick}
       >
@@ -159,14 +245,14 @@ const PredictionModal = ({
               <Loader2 className="h-12 w-12 animate-spin mx-auto mb-4 text-blue-600" />
               <h3 className="text-xl font-semibold mb-2">Preparing Analysis</h3>
               <p className="text-gray-600">
-                {!modelReady 
-                  ? 'Training AI model with market data...' 
-                  : `Generating prediction for ${coin.id}...`
-                }
+                {!modelReady
+                  ? "Training AI model with market data..."
+                  : `Generating prediction for ${coin.id}...`}
               </p>
               <div className="mt-6 bg-blue-50 p-4 rounded-lg">
                 <p className="text-sm text-blue-800">
-                  Our AI is analyzing market trends, sentiment data, and price patterns to generate accurate predictions.
+                  Our AI is analyzing market trends, sentiment data, and price
+                  patterns to generate accurate predictions.
                 </p>
               </div>
             </div>
@@ -177,10 +263,12 @@ const PredictionModal = ({
   }
 
   const isPredictedUp = analysis.prediction > 0;
-  const lastUpdated = analysis.timestamp ? new Date(analysis.timestamp) : new Date();
+  const lastUpdated = analysis.timestamp
+    ? new Date(analysis.timestamp)
+    : new Date();
 
   return (
-    <div 
+    <div
       className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
       onClick={handleBackdropClick}
     >
@@ -198,7 +286,7 @@ const PredictionModal = ({
                 {coin.id} Price Prediction
               </h2>
               <p className="text-sm text-gray-500 mt-1">
-                (Last updated: {formatDate(lastUpdated)})
+                Last updated: {formatDate(lastUpdated)}
               </p>
             </div>
             <button
@@ -216,11 +304,19 @@ const PredictionModal = ({
                 <div className="flex justify-between items-center">
                   <div>
                     <p className="text-sm text-gray-600">Current Price</p>
-                    <p className="text-2xl font-bold">${coin.current_price.toLocaleString()}</p>
+                    <p className="text-2xl font-bold">
+                      ${coin.current_price.toLocaleString()}
+                    </p>
                   </div>
                   <div className="text-right">
                     <p className="text-sm text-gray-600">24h Change</p>
-                    <p className={`text-lg font-semibold ${coin.price_change_percentage_24h >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    <p
+                      className={`text-lg font-semibold ${
+                        coin.price_change_percentage_24h >= 0
+                          ? "text-green-500"
+                          : "text-red-500"
+                      }`}
+                    >
                       {coin.price_change_percentage_24h.toFixed(2)}%
                     </p>
                   </div>
@@ -229,20 +325,31 @@ const PredictionModal = ({
             </Card>
 
             {/* Prediction Details */}
-            <Card className={`border-2 ${isPredictedUp ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+            <Card
+              className={`border-2 ${
+                isPredictedUp
+                  ? "border-green-200 bg-green-50"
+                  : "border-red-200 bg-red-50"
+              }`}
+            >
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold">AI Prediction</h3>
-                  {isPredictedUp ? 
-                    <TrendingUp className="h-6 w-6 text-green-600" /> : 
+                  {isPredictedUp ? (
+                    <TrendingUp className="h-6 w-6 text-green-600" />
+                  ) : (
                     <TrendingDown className="h-6 w-6 text-red-600" />
-                  }
+                  )}
                 </div>
-                
+
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
                     <p className="text-sm text-gray-600">Predicted Movement</p>
-                    <p className={`text-xl font-bold ${isPredictedUp ? 'text-green-600' : 'text-red-600'}`}>
+                    <p
+                      className={`text-xl font-bold ${
+                        isPredictedUp ? "text-green-600" : "text-red-600"
+                      }`}
+                    >
                       {analysis.prediction.toFixed(2)}%
                     </p>
                   </div>
@@ -253,21 +360,29 @@ const PredictionModal = ({
                         <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
                       </CustomTooltip>
                     </div>
-                    <p className="text-xl font-bold">{(analysis.confidence * 100).toFixed(1)}%</p>
+                    <p className="text-xl font-bold">
+                      {(analysis.confidence * 100).toFixed(1)}%
+                    </p>
                   </div>
                 </div>
 
                 <div className="space-y-3">
-                  <h4 className="font-medium text-gray-700">Analysis Factors</h4>
+                  <h4 className="font-medium text-gray-700">
+                    Analysis Factors
+                  </h4>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="bg-white p-3 rounded-lg">
                       <div className="flex items-center space-x-1 mb-1">
-                        <p className="text-xs text-gray-600">Price Volatility</p>
+                        <p className="text-xs text-gray-600">
+                          Price Volatility
+                        </p>
                         <CustomTooltip text="Measures how much the price fluctuates over time">
                           <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
                         </CustomTooltip>
                       </div>
-                      <p className="font-semibold">{analysis.features.price_volatility.toFixed(3)}</p>
+                      <p className="font-semibold">
+                        {analysis.features.price_volatility.toFixed(3)}
+                      </p>
                     </div>
                     <div className="bg-white p-3 rounded-lg">
                       <div className="flex items-center space-x-1 mb-1">
@@ -276,7 +391,9 @@ const PredictionModal = ({
                           <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
                         </CustomTooltip>
                       </div>
-                      <p className="font-semibold">{analysis.features.volume_change.toFixed(2)}%</p>
+                      <p className="font-semibold">
+                        {analysis.features.volume_change.toFixed(2)}%
+                      </p>
                     </div>
                     <div className="bg-white p-3 rounded-lg">
                       <div className="flex items-center space-x-1 mb-1">
@@ -285,16 +402,22 @@ const PredictionModal = ({
                           <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
                         </CustomTooltip>
                       </div>
-                      <p className="font-semibold">{analysis.features.price_momentum.toFixed(3)}</p>
+                      <p className="font-semibold">
+                        {analysis.features.price_momentum.toFixed(3)}
+                      </p>
                     </div>
                     <div className="bg-white p-3 rounded-lg">
                       <div className="flex items-center space-x-1 mb-1">
-                        <p className="text-xs text-gray-600">Market Sentiment</p>
+                        <p className="text-xs text-gray-600">
+                          Market Sentiment
+                        </p>
                         <CustomTooltip text="Overall market feeling based on news and social media analysis">
                           <HelpCircle className="h-3 w-3 text-gray-400 cursor-help" />
                         </CustomTooltip>
                       </div>
-                      <p className="font-semibold">{analysis.features.avg_sentiment.toFixed(3)}</p>
+                      <p className="font-semibold">
+                        {analysis.features.avg_sentiment.toFixed(3)}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -311,26 +434,26 @@ const PredictionModal = ({
                   <div className="h-64">
                     <LineChart width={500} height={240} data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                      <XAxis 
-                        dataKey="name" 
+                      <XAxis
+                        dataKey="name"
                         tick={{ fontSize: 12 }}
                         stroke="#888888"
                       />
-                      <YAxis 
-                        domain={['auto', 'auto']}
+                      <YAxis
+                        domain={["auto", "auto"]}
                         tick={{ fontSize: 12 }}
                         stroke="#888888"
                       />
-                      <Tooltip 
-                        contentStyle={{ 
-                          backgroundColor: 'white',
-                          border: '1px solid #e5e7eb'
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "white",
+                          border: "1px solid #e5e7eb",
                         }}
                       />
-                      <Line 
-                        type="monotone" 
-                        dataKey="price" 
-                        stroke={isPredictedUp ? '#10B981' : '#EF4444'}
+                      <Line
+                        type="monotone"
+                        dataKey="price"
+                        stroke={isPredictedUp ? "#10B981" : "#EF4444"}
                         strokeWidth={3}
                         dot={false}
                         isAnimationActive={false}
@@ -347,9 +470,14 @@ const PredictionModal = ({
   );
 };
 
-const CryptoPriceCard = ({ coin, chartData, analysis, modelReady }: { 
-  coin: CryptoPrice; 
-  chartData: ChartData[]; 
+const CryptoPriceCard = ({
+  coin,
+  chartData,
+  analysis,
+  modelReady,
+}: {
+  coin: CryptoPrice;
+  chartData: ChartData[];
   analysis?: Analysis;
   modelReady: boolean;
 }) => {
@@ -389,26 +517,35 @@ const CryptoPriceCard = ({ coin, chartData, analysis, modelReady }: {
         transition={{ duration: 0.5 }}
       >
         <Card className="overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
-          <CardHeader className={`${isPositive ? 'bg-green-50' : 'bg-red-50'}`}>
+          <CardHeader className={`${isPositive ? "bg-green-50" : "bg-red-50"}`}>
             <CardTitle className="capitalize flex justify-between items-center">
-              <span>{coin.id} ({coin.symbol.toUpperCase()})</span>
-              {isPositive ? 
-                <TrendingUp className="h-5 w-5 text-green-600" /> : 
+              <span>
+                {coin.id} ({coin.symbol.toUpperCase()})
+              </span>
+              {isPositive ? (
+                <TrendingUp className="h-5 w-5 text-green-600" />
+              ) : (
                 <TrendingDown className="h-5 w-5 text-red-600" />
-              }
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4">
             <div className="mb-4">
-              <p className="text-2xl font-bold">${coin.current_price.toLocaleString()}</p>
-              <p className={`text-sm ${isPositive ? 'text-green-500' : 'text-red-500'}`}>
+              <p className="text-2xl font-bold">
+                ${coin.current_price.toLocaleString()}
+              </p>
+              <p
+                className={`text-sm ${
+                  isPositive ? "text-green-500" : "text-red-500"
+                }`}
+              >
                 {coin.price_change_percentage_24h.toFixed(2)}% (24h)
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                Volume: ${(coin.total_volume/1000000).toFixed(2)}M
+                Volume: ${(coin.total_volume / 1000000).toFixed(2)}M
               </p>
             </div>
-            
+
             <div className="mb-4">
               <button
                 onClick={() => setShowPrediction(true)}
@@ -423,26 +560,26 @@ const CryptoPriceCard = ({ coin, chartData, analysis, modelReady }: {
               <div className="h-48">
                 <LineChart width={300} height={180} data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                  <XAxis 
-                    dataKey="name" 
+                  <XAxis
+                    dataKey="name"
                     tick={{ fontSize: 12 }}
                     stroke="#888888"
                   />
-                  <YAxis 
-                    domain={['auto', 'auto']}
+                  <YAxis
+                    domain={["auto", "auto"]}
                     tick={{ fontSize: 12 }}
                     stroke="#888888"
                   />
-                  <Tooltip 
-                    contentStyle={{ 
-                      backgroundColor: 'white',
-                      border: '1px solid #e5e7eb'
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "white",
+                      border: "1px solid #e5e7eb",
                     }}
                   />
-                  <Line 
-                    type="monotone" 
-                    dataKey="price" 
-                    stroke={isPositive ? '#10B981' : '#EF4444'}
+                  <Line
+                    type="monotone"
+                    dataKey="price"
+                    stroke={isPositive ? "#10B981" : "#EF4444"}
                     strokeWidth={2}
                     dot={false}
                     isAnimationActive={false}
@@ -491,48 +628,384 @@ const NewsCard = ({ item }: { item: NewsItem }) => {
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
-    >
-      <Card className="shadow-md hover:shadow-lg transition-shadow">
-        <CardContent className="p-6">
-          <h3 className="font-bold mb-2 text-lg">
-            <a 
-              href={item.url} 
-              target="_blank" 
-              rel="noopener noreferrer" 
-              className="text-blue-600 hover:text-blue-800 hover:underline"
+    <Card className="shadow-md hover:shadow-lg transition-all duration-300 hover:scale-[1.02]">
+      <CardContent className="p-6">
+        <div className="flex justify-between items-start mb-2">
+          <h3 className="font-bold text-lg leading-tight flex-1 mr-4">
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 hover:underline transition-colors"
             >
               {item.title}
             </a>
           </h3>
-          <p className="text-sm text-gray-500 mb-3">
-            Published: {formatDate(item.published_at)}
+          <span className="text-xs text-gray-500 whitespace-nowrap">
+            {formatRelativeTime(item.published_at)}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 text-sm text-gray-500 mb-3">
+          <Clock className="w-4 h-4" />
+          <span>{formatDate(item.published_at)}</span>
+          <span className="text-gray-300">•</span>
+          <span>{item.source.title}</span>
+        </div>
+
+        {item.summary && (
+          <p className="text-sm text-gray-700 mb-3 line-clamp-2">
+            {item.summary}
           </p>
-          <div className="flex flex-wrap gap-2">
-            {item.currencies.map(currency => (
-              <span 
-                key={currency.code} 
-                className="bg-gray-100 text-gray-800 rounded-full px-3 py-1 text-sm font-medium"
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {item.currencies.map((currency) => (
+            <span
+              key={currency.code}
+              className="bg-blue-100 text-blue-800 rounded-full px-3 py-1 text-xs font-medium"
+            >
+              {currency.code}
+            </span>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// Pagination Component
+const Pagination = ({
+  pagination,
+  onPageChange,
+  loading,
+}: {
+  pagination: PaginationInfo;
+  onPageChange: (page: number) => void;
+  loading: boolean;
+}) => {
+  const { current_page, total_pages, has_prev, has_next } = pagination;
+
+  // Generate page numbers to show
+  const getPageNumbers = () => {
+    const pages: (number | string)[] = [];
+    const maxVisiblePages = 5;
+
+    if (total_pages <= maxVisiblePages) {
+      for (let i = 1; i <= total_pages; i++) {
+        pages.push(i);
+      }
+    } else {
+      // Always show first page
+      pages.push(1);
+
+      if (current_page > 3) {
+        pages.push("...");
+      }
+
+      // Show pages around current page
+      const start = Math.max(2, current_page - 1);
+      const end = Math.min(total_pages - 1, current_page + 1);
+
+      for (let i = start; i <= end; i++) {
+        if (!pages.includes(i)) {
+          pages.push(i);
+        }
+      }
+
+      if (current_page < total_pages - 2) {
+        pages.push("...");
+      }
+
+      // Always show last page
+      if (!pages.includes(total_pages)) {
+        pages.push(total_pages);
+      }
+    }
+
+    return pages;
+  };
+
+  return (
+    <div className="flex items-center justify-center space-x-2 mt-6">
+      {/* Previous button */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onPageChange(current_page - 1)}
+        disabled={!has_prev || loading}
+        className="flex items-center gap-1"
+      >
+        <ChevronLeft className="w-4 h-4" />
+        Prev
+      </Button>
+
+      {/* Page numbers */}
+      <div className="flex items-center space-x-1">
+        {getPageNumbers().map((page, index) => (
+          <React.Fragment key={index}>
+            {page === "..." ? (
+              <span className="px-3 py-1 text-gray-500">...</span>
+            ) : (
+              <Button
+                variant={page === current_page ? "default" : "outline"}
+                size="sm"
+                onClick={() => onPageChange(page as number)}
+                disabled={loading}
+                className={`min-w-[40px] ${
+                  page === current_page
+                    ? "bg-blue-600 hover:bg-blue-700"
+                    : "hover:bg-gray-100"
+                }`}
               >
-                {currency.code}
-              </span>
+                {page}
+              </Button>
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+
+      {/* Next button */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onPageChange(current_page + 1)}
+        disabled={!has_next || loading}
+        className="flex items-center gap-1"
+      >
+        Next
+        <ChevronRight className="w-4 h-4" />
+      </Button>
+    </div>
+  );
+};
+
+// Cache Status Component
+const CacheStatus = ({
+  cacheInfo,
+  onRefresh,
+  refreshing,
+}: {
+  cacheInfo?: NewsData["cache_info"];
+  onRefresh: () => void;
+  refreshing: boolean;
+}) => {
+  if (!cacheInfo) return null;
+
+  const lastUpdated = cacheInfo.last_updated
+    ? new Date(cacheInfo.last_updated)
+    : new Date();
+  const nextRefresh = cacheInfo.next_refresh
+    ? new Date(cacheInfo.next_refresh)
+    : null;
+
+  return (
+    <div className="flex justify-end mb-4">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onRefresh}
+        disabled={refreshing}
+        className="flex items-center gap-1"
+      >
+        <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
+        {refreshing ? "Refreshing..." : "Refresh"}
+      </Button>
+    </div>
+  );
+};
+// Main News Component
+const EnhancedNewsComponent = () => {
+  const [newsData, setNewsData] = useState<NewsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  // Fetch news data
+  const fetchNews = async (page: number = 1) => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Use your external API instead of local routes
+      const response = await fetch(
+        `${API_CONFIG.baseUrl}${API_CONFIG.endpoints.news}?page=${page}&per_page=10`
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data: NewsData = await response.json();
+      setNewsData(data);
+      setCurrentPage(page);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch news");
+      console.error("Error fetching news:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Update the handleRefresh function
+  const handleRefresh = async () => {
+    try {
+      setRefreshing(true);
+
+      // Use your external API for refresh
+      const refreshResponse = await fetch(
+        `${API_CONFIG.baseUrl}${API_CONFIG.endpoints.refreshNews}`,
+        {
+          method: "POST",
+        }
+      );
+
+      if (refreshResponse.ok) {
+        await fetchNews(currentPage);
+      } else {
+        throw new Error("Failed to refresh news");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to refresh news");
+      console.error("Error refreshing news:", err);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Handle page change
+  const handlePageChange = (page: number) => {
+    if (page !== currentPage) {
+      fetchNews(page);
+    }
+  };
+
+  // Initial load
+  useEffect(() => {
+    fetchNews(1);
+  }, []);
+
+  // Auto-refresh every 12 hours
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchNews(currentPage);
+    }, 12 * 60 * 60 * 1000); // 12 hours
+
+    return () => clearInterval(interval);
+  }, [currentPage]);
+
+  // Scroll to top when page changes
+  useEffect(() => {
+    // Only scroll if it's not the initial load (currentPage > 1 or we have data)
+    if (currentPage > 1 || (newsData && !loading)) {
+      // Small delay to ensure content is rendered
+      setTimeout(() => {
+        // Scroll to top of the page
+        window.scrollTo({ top: 0, behavior: "smooth" });
+
+        // Alternative: Scroll to just below the sticky header
+        // const headerHeight = 120; // Adjust based on your header height
+        // window.scrollTo({ top: headerHeight, behavior: 'smooth' });
+      }, 100);
+    }
+  }, [currentPage, loading]); // Trigger when currentPage changes or loading finishes
+
+  if (error) {
+    return (
+      <div className="text-center py-8">
+        <div className="text-red-600 mb-4">
+          <p className="font-semibold">Error loading news</p>
+          <p className="text-sm">{error}</p>
+        </div>
+        <Button onClick={() => fetchNews(currentPage)}>
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Try Again
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Cache Status */}
+      <CacheStatus
+        cacheInfo={newsData?.cache_info}
+        onRefresh={handleRefresh}
+        refreshing={refreshing}
+      />
+
+      {/* Loading State */}
+      {loading && (
+        <div className="space-y-4">
+          {[...Array(10)].map((_, index) => (
+            <Card key={index} className="shadow-md">
+              <CardContent className="p-6">
+                <div className="animate-pulse">
+                  <div className="h-6 bg-gray-200 rounded mb-2"></div>
+                  <div className="h-4 bg-gray-200 rounded mb-3 w-3/4"></div>
+                  <div className="flex space-x-2">
+                    <div className="h-6 bg-gray-200 rounded-full w-16"></div>
+                    <div className="h-6 bg-gray-200 rounded-full w-16"></div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* News Articles */}
+      {!loading && newsData && (
+        <>
+          {/* Results Summary */}
+          <div className="text-sm text-gray-600 mb-4">
+            Showing {newsData.news.length} of {newsData.pagination.total_items}{" "}
+            articles (Page {newsData.pagination.current_page} of{" "}
+            {newsData.pagination.total_pages})
+          </div>
+
+          {/* News List */}
+          <div className="space-y-4">
+            {newsData.news.map((item, index) => (
+              <NewsCard key={`${item.id || item.url}-${index}`} item={item} />
             ))}
           </div>
-        </CardContent>
-      </Card>
-    </motion.div>
+
+          {newsData?.pagination?.total_pages > 1 && (
+            <Pagination
+              pagination={newsData.pagination}
+              onPageChange={handlePageChange}
+              loading={loading}
+            />
+          )}
+        </>
+      )}
+
+      {/* Empty State */}
+      {!loading && newsData && newsData.news.length === 0 && (
+        <div className="text-center py-8">
+          <p className="text-gray-500 mb-4">No news articles found</p>
+          <Button onClick={() => fetchNews(1)}>
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Refresh
+          </Button>
+        </div>
+      )}
+    </div>
   );
 };
 
 export default function Home() {
-  const { data, isConnected, error, isInitialLoading } = useSSE() as SSEResponse<StreamData>;
+  const { data, isConnected, error, isInitialLoading } =
+    useSSE() as SSEResponse<StreamData>;
   const [prices, setPrices] = useState<CryptoPrice[]>([]);
   const [news, setNews] = useState<NewsItem[]>([]);
-  const [chartData, setChartData] = useState<{ [key: string]: ChartData[] }>({});
-  const [lastAnalysis, setLastAnalysis] = useState<{ [key: string]: Analysis }>({});
+  const [chartData, setChartData] = useState<{ [key: string]: ChartData[] }>(
+    {}
+  );
+  const [lastAnalysis, setLastAnalysis] = useState<{ [key: string]: Analysis }>(
+    {}
+  );
   const [activeTab, setActiveTab] = useState<string>("prices");
   const [mounted, setMounted] = useState(false);
 
@@ -545,23 +1018,23 @@ export default function Home() {
       if (data.prices?.length > 0) {
         setPrices(data.prices);
       }
-      
+
       if (data.news?.length > 0) {
         setNews(data.news);
       }
 
       if (data.analysis) {
         const timestampedAnalysis: { [key: string]: Analysis } = {};
-        Object.keys(data.analysis).forEach(coinId => {
+        Object.keys(data.analysis).forEach((coinId) => {
           timestampedAnalysis[coinId] = {
             ...data.analysis[coinId],
-            timestamp: Date.now()
+            timestamp: Date.now(),
           };
         });
-        setLastAnalysis(prev => ({ ...prev, ...timestampedAnalysis }));
+        setLastAnalysis((prev) => ({ ...prev, ...timestampedAnalysis }));
       }
-      
-      setChartData(prevChartData => {
+
+      setChartData((prevChartData) => {
         const newChartData = { ...prevChartData };
         data.prices?.forEach((price: CryptoPrice) => {
           if (!newChartData[price.id]) {
@@ -573,8 +1046,8 @@ export default function Home() {
             ...newChartData[price.id],
             {
               name: timestamp,
-              price: price.current_price
-            }
+              price: price.current_price,
+            },
           ].slice(-30); // Keep only last 30 data points
         });
         return newChartData;
@@ -587,7 +1060,7 @@ export default function Home() {
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
           <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4" />
-          <p>Loading crypto dashboard...</p>
+          <p>Please wait, loading crypto dashboard...</p>
         </div>
       </div>
     );
@@ -597,7 +1070,7 @@ export default function Home() {
     <div className="min-h-screen bg-white">
       <div className="sticky top-0 z-40 bg-white border-b shadow-sm">
         <div className="container mx-auto p-4">
-          <motion.h1 
+          <motion.h1
             className="text-3xl font-bold mb-4"
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -605,23 +1078,14 @@ export default function Home() {
           >
             Crypto Analytics Dashboard
           </motion.h1>
-          
-          {!isConnected && (
-            <Alert variant="destructive" className="mb-4">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>
-                Connection lost. Displaying last available data. Attempting to reconnect...
-              </AlertDescription>
-            </Alert>
-          )}
 
           <div className="flex justify-center">
             <div className="border-b bg-gray-100 rounded-lg">
               <button
                 onClick={() => setActiveTab("prices")}
                 className={`px-6 py-3 font-medium transition-colors rounded-l-lg ${
-                  activeTab === "prices" 
-                    ? "bg-green-500 text-white" 
+                  activeTab === "prices"
+                    ? "bg-green-500 text-white"
                     : "text-gray-600 hover:text-gray-800 hover:bg-gray-200"
                 }`}
               >
@@ -630,8 +1094,8 @@ export default function Home() {
               <button
                 onClick={() => setActiveTab("news")}
                 className={`px-6 py-3 font-medium transition-colors rounded-r-lg ${
-                  activeTab === "news" 
-                    ? "bg-red-500 text-white" 
+                  activeTab === "news"
+                    ? "bg-red-500 text-white"
                     : "text-gray-600 hover:text-gray-800 hover:bg-gray-200"
                 }`}
               >
@@ -652,8 +1116,8 @@ export default function Home() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: index * 0.1 }}
               >
-                <CryptoPriceCard 
-                  coin={coin} 
+                <CryptoPriceCard
+                  coin={coin}
                   chartData={chartData[coin.id] || []}
                   analysis={lastAnalysis[coin.id] || data?.analysis?.[coin.id]}
                   modelReady={data?.model_ready ?? false}
@@ -663,13 +1127,7 @@ export default function Home() {
           </div>
         )}
 
-        {activeTab === "news" && (
-          <div className="space-y-4">
-            {news.map((item, index) => (
-              <NewsCard key={`${item.url}-${index}`} item={item} />
-            ))}
-          </div>
-        )}
+        {activeTab === "news" && <EnhancedNewsComponent />}
       </div>
     </div>
   );
