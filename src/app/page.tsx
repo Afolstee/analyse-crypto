@@ -828,7 +828,7 @@ const EnhancedNewsComponent = () => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch('/api/news?page=1&per_page=10');
+      const response = await fetch(`/api/news?page=${page}&per_page=10`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
