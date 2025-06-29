@@ -1,19 +1,47 @@
 from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
-from flask_compress import Compress
 import requests
 import json
 import time
 import os
 import redis
 from threading import Thread, Lock
-from crypto_analyzer import CryptoDataManager
 from datetime import datetime, timedelta
+
+# Optional imports with fallbacks
+try:
+    from flask_compress import Compress
+    COMPRESSION_AVAILABLE = True
+except ImportError:
+    print("⚠️ Flask-Compress not available, compression disabled")
+    COMPRESSION_AVAILABLE = False
+
+try:
+    from crypto_analyzer import CryptoDataManager
+    ANALYZER_AVAILABLE = True
+except ImportError:
+    print("⚠️ CryptoDataManager not available, using basic functionality")
+    ANALYZER_AVAILABLE = False
+    # Create a dummy analyzer class
+    class CryptoDataManager:
+        def __init__(self, coin_ids=None):
+            self.coin_ids = coin_ids or []
+            self.is_scaler_fitted = True
+        
+        def store_price_data(self, data):
+            pass
+        
+        def store_news_data(self, data):
+            pass
+        
+        def predict_movement(self, coin_id):
+            return None
 
 app = Flask(__name__)
 
-# Enable gzip compression for better performance
-Compress(app)
+# Enable gzip compression for better performance if available
+if COMPRESSION_AVAILABLE:
+    Compress(app)
 
 # Environment-based CORS configuration
 allowed_origins = os.environ.get('ALLOWED_ORIGINS', 'http://localhost:3000,https://analyse-crypto-nine.vercel.app').split(',')
@@ -381,12 +409,14 @@ def create_analysis_response(prices, news, analyzer):
         'debug': {
             'price_count': len(prices),
             'news_count': len(news),
-            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'analyzer_available': ANALYZER_AVAILABLE,
+            'compression_available': COMPRESSION_AVAILABLE
         }
     }
     
     # Add analysis for each coin if we have a working analyzer
-    if hasattr(analyzer, 'predict_movement'):
+    if ANALYZER_AVAILABLE and hasattr(analyzer, 'predict_movement'):
         for price in prices:
             try:
                 analysis = analyzer.predict_movement(price['id'])
@@ -411,6 +441,10 @@ def news_refresh_worker():
 
 def initialize_analyzer():
     """Initialize the analyzer with any available data"""
+    if not ANALYZER_AVAILABLE:
+        print("⚠️ Analyzer not available, skipping initialization")
+        return
+        
     retry_count = 0
     max_retries = 3
     
@@ -615,6 +649,11 @@ def health_check():
             'news_articles': len(news_cache['data']),
             'last_updated': news_cache['last_updated'].isoformat() if news_cache['last_updated'] else None,
             'is_fresh': not is_cache_expired()
+        },
+        'features': {
+            'compression': COMPRESSION_AVAILABLE,
+            'analyzer': ANALYZER_AVAILABLE,
+            'redis': USE_REDIS
         },
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
     })
