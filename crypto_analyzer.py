@@ -1,10 +1,6 @@
-import numpy as np
 from datetime import datetime, timedelta
 import sqlite3
-import json
-import time
 import logging
-import gc
 import random
 
 # Set up logging

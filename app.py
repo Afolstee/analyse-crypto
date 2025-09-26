@@ -13,14 +13,12 @@ try:
     from flask_compress import Compress
     COMPRESSION_AVAILABLE = True
 except ImportError:
-    print("⚠️ Flask-Compress not available, compression disabled")
     COMPRESSION_AVAILABLE = False
 
 try:
     from crypto_analyzer import CryptoDataManager
     ANALYZER_AVAILABLE = True
 except ImportError:
-    print("⚠️ CryptoDataManager not available, using basic functionality")
     ANALYZER_AVAILABLE = False
     # Create a dummy analyzer class
     class CryptoDataManager:
@@ -80,11 +78,11 @@ COIN_SYMBOL_MAP = {
 analyzer = CryptoDataManager(coin_ids=coin_ids)
 
 # Enhanced caching system with Redis support
-CACHE_DURATION_SECONDS = 300  # 5 minutes for API responses
-NEWS_CACHE_DURATION_HOURS = 12  # 12 hours for news data
-NEWS_REFRESH_INTERVAL = 12 * 60 * 60  # 12 hours in seconds
+CACHE_DURATION_SECONDS = 300  
+NEWS_CACHE_DURATION_HOURS = 12 
+NEWS_REFRESH_INTERVAL = 12 * 60 * 60  
 
-# Simple in-memory cache as fallback
+
 memory_cache = {}
 
 # Try Redis if available, fallback to memory
@@ -92,11 +90,9 @@ try:
     redis_client = redis.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379'))
     redis_client.ping()
     USE_REDIS = True
-    print("✅ Redis connected successfully")
 except Exception as e:
     USE_REDIS = False
     redis_client = None
-    print(f"⚠️ Redis not available, using memory cache: {e}")
 
 # News caching system (enhanced)
 news_cache = {
@@ -119,7 +115,6 @@ def get_cache(key):
                 return cache_entry.get('data')
             return None
     except Exception as e:
-        print(f"❌ Cache get error for key {key}: {e}")
         return None
 
 def set_cache(key, data, duration=CACHE_DURATION_SECONDS):
@@ -129,9 +124,8 @@ def set_cache(key, data, duration=CACHE_DURATION_SECONDS):
             redis_client.setex(key, duration, json.dumps(data, default=str))
         else:
             memory_cache[key] = {'data': data, 'timestamp': time.time()}
-        print(f"✅ Cached data for key: {key}")
     except Exception as e:
-        print(f"❌ Cache set error for key {key}: {e}")
+        pass
 
 def is_cache_expired():
     """Check if news cache is expired (older than 12 hours)"""
@@ -148,10 +142,7 @@ def fetch_price_data():
     # Try cache first
     cached_prices = get_cache(cache_key)
     if cached_prices:
-        print(f"✅ Using cached price data ({len(cached_prices)} coins)")
         return cached_prices
-    
-    print("❌ Cache miss for prices, fetching fresh data...")
     
     params = {
         "vs_currency": "usd", 
@@ -164,30 +155,20 @@ def fetch_price_data():
     }
     
     try:
-        print(f"🔄 Fetching price data from: {COINGECKO_URL}")
-        
         response = requests.get(COINGECKO_URL, params=params, timeout=15)
-        print(f"📊 Response status: {response.status_code}")
         
         if response.status_code == 429:
-            print("⚠️ Rate limited by CoinGecko - waiting 60 seconds")
             time.sleep(60)
             response = requests.get(COINGECKO_URL, params=params, timeout=15)
         
         response.raise_for_status()
         data = response.json()
         
-        print(f"✅ Fetched price data successfully - {len(data)} coins")
-        
         # Validate data structure
         valid_data = []
         for coin in data:
             if isinstance(coin, dict) and 'current_price' in coin and coin['current_price'] is not None:
                 valid_data.append(coin)
-            else:
-                print(f"⚠️ Invalid coin data: {coin.get('id', 'unknown')}")
-        
-        print(f"✅ Valid price records: {len(valid_data)}")
         
         # Cache the valid data
         if valid_data:
@@ -196,24 +177,16 @@ def fetch_price_data():
         return valid_data
         
     except requests.exceptions.Timeout:
-        print("⏱️ CoinGecko API timeout - trying fallback")
         return fetch_fallback_prices()
     except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to fetch price data: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"Response status: {e.response.status_code}")
-            print(f"Response text: {e.response.text[:200]}")
         return fetch_fallback_prices()
     except json.JSONDecodeError as e:
-        print(f"❌ JSON decode error: {e}")
         return fetch_fallback_prices()
     except Exception as e:
-        print(f"❌ Unexpected error fetching prices: {e}")
         return fetch_fallback_prices()
 
 def fetch_fallback_prices():
     """Fallback price data when API fails"""
-    print("🔄 Using fallback price data")
     fallback_prices = {
         "bitcoin": 43000,
         "ethereum": 2500,
@@ -242,7 +215,6 @@ def fetch_fallback_prices():
             'last_updated': time.strftime('%Y-%m-%dT%H:%M:%S.000Z')
         })
     
-    print(f"✅ Generated {len(fallback_data)} fallback price records")
     return fallback_data
 
 def fetch_news_from_api():
@@ -252,12 +224,9 @@ def fetch_news_from_api():
     # Check if we have recent news in cache
     cached_news = get_cache(cache_key)
     if cached_news:
-        print(f"✅ Using cached news data ({len(cached_news)} articles)")
         return cached_news
     
-    print("❌ Cache miss for news, fetching fresh data...")
-    
-    # Get symbols for the coins we're tracking
+    # Get symbols for the tracked coins
     symbols = [COIN_SYMBOL_MAP.get(coin_id, coin_id.upper()) for coin_id in coin_ids]
     
     params = {
@@ -269,7 +238,6 @@ def fetch_news_from_api():
     }
     
     try:
-        print(f"🔄 Fetching fresh news from: {CRYPTOCOMPARE_NEWS_URL}")
         response = requests.get(CRYPTOCOMPARE_NEWS_URL, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
@@ -277,9 +245,8 @@ def fetch_news_from_api():
         # CryptoCompare can return "Success" or success message in "Message"
         if data.get("Response") == "Success" or "successfully returned" in data.get("Message", "").lower():
             news_data = data.get("Data", [])
-            print(f"✅ Fetched {len(news_data)} news articles successfully")
             
-            # Transform CryptoCompare news format to match our expected format
+            # Transform CryptoCompare news format to match expected format
             transformed_news = []
             current_time = int(time.time())
             twenty_four_hours_ago = current_time - (24 * 60 * 60)
@@ -307,7 +274,7 @@ def fetch_news_from_api():
                 # Try to extract relevant currencies from categories or tags
                 categories = article.get('categories', '')
                 if categories:
-                    # Match categories with our tracked coins
+                    # Match categories with tracked coins
                     for coin_id, symbol in COIN_SYMBOL_MAP.items():
                         if symbol.lower() in categories.lower() or coin_id in categories.lower():
                             transformed_article['currencies'].append({
@@ -329,40 +296,28 @@ def fetch_news_from_api():
             
             return final_news
         else:
-            print(f"❌ CryptoCompare API error: {data.get('Message', 'Unknown error')}")
             return []
             
     except requests.exceptions.RequestException as e:
-        print(f"❌ Failed to fetch news data: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"Status code: {e.response.status_code}")
-            print(f"Response: {e.response.text[:300]}...")
         return []
 
 def get_cached_news():
     """Get news from cache or fetch fresh if expired"""
     with news_cache['lock']:
         if is_cache_expired():
-            print("🔄 News cache expired, fetching fresh news...")
             fresh_news = fetch_news_from_api()
             if fresh_news:
                 news_cache['data'] = fresh_news
                 news_cache['last_updated'] = datetime.now()
-                print(f"✅ Updated news cache with {len(fresh_news)} articles")
-            else:
-                print("⚠️ Failed to fetch fresh news, using existing cache")
-        else:
-            print(f"✅ Using cached news ({len(news_cache['data'])} articles)")
         
         return news_cache['data'].copy()
 
 def paginate_news(news_list, page=1, per_page=10):
-    """Paginate news list with caching support"""
     # Limit per_page to prevent abuse
     per_page = min(per_page, 50)
     
     total_items = len(news_list)
-    total_pages = (total_items + per_page - 1) // per_page  # Ceiling division
+    total_pages = (total_items + per_page - 1) // per_page
     
     if page < 1:
         page = 1
@@ -390,8 +345,6 @@ def paginate_news(news_list, page=1, per_page=10):
 
 def create_analysis_response(prices, news, analyzer):
     """Create response with price, news, and analysis data"""
-    print(f"🔧 Creating response with {len(prices)} prices and {len(news)} news articles")
-    
     response = {
         'prices': prices,
         'news': news,
@@ -423,9 +376,8 @@ def create_analysis_response(prices, news, analyzer):
                 if analysis:
                     response['analysis'][price['id']] = analysis
             except Exception as e:
-                print(f"Error analyzing {price['id']}: {e}")
+                pass
     
-    print(f"✅ Response created successfully")
     return response
 
 def news_refresh_worker():
@@ -433,16 +385,13 @@ def news_refresh_worker():
     while True:
         try:
             time.sleep(NEWS_REFRESH_INTERVAL)  # Wait 12 hours
-            print("🔄 Background news refresh triggered")
             get_cached_news()  # This will refresh if needed
         except Exception as e:
-            print(f"❌ Error in news refresh worker: {e}")
             time.sleep(300)  # Wait 5 minutes before retrying
 
 def initialize_analyzer():
     """Initialize the analyzer with any available data"""
     if not ANALYZER_AVAILABLE:
-        print("⚠️ Analyzer not available, skipping initialization")
         return
         
     retry_count = 0
@@ -450,18 +399,15 @@ def initialize_analyzer():
     
     while retry_count < max_retries:
         try:
-            print(f"Attempting to initialize analyzer (attempt {retry_count + 1}/{max_retries})...")
             prices = fetch_price_data()
             news = get_cached_news()  # Use cached news system
             
             if prices:
                 if hasattr(analyzer, 'store_price_data'):
                     analyzer.store_price_data(prices)
-                print(f"Stored {len(prices)} price records")
             if news:
                 if hasattr(analyzer, 'store_news_data'):
                     analyzer.store_news_data(news)
-                print(f"Stored {len(news)} news records")
             
             # Try to fit with whatever data we have
             if hasattr(analyzer, 'fit_scaler'):
@@ -469,24 +415,18 @@ def initialize_analyzer():
             if hasattr(analyzer, 'fit_model'):
                 analyzer.fit_model()
             
-            print("✅ Initial analyzer setup complete")
             break
                 
         except Exception as e:
-            print(f"⚠️ Initial training incomplete (will retry in 10 seconds): {e}")
+            pass
         
         retry_count += 1
         if retry_count < max_retries:
             time.sleep(10)
-    
-    if retry_count >= max_retries:
-        print("❌ Failed to initialize analyzer after maximum retries, continuing with basic functionality")
 
 @app.route("/crypto-data", methods=["GET"])
 def get_crypto_data():
     try:
-        print("🔄 /crypto-data endpoint called")
-        
         # Get pagination parameters
         page = int(request.args.get('page', 1))
         per_page = min(int(request.args.get('per_page', 10)), 50)  # Limit to 50
@@ -497,10 +437,7 @@ def get_crypto_data():
         # Try cache first
         cached_data = get_cache(cache_key)
         if cached_data:
-            print(f"✅ Cache hit for crypto-data: {cache_key}")
             return jsonify(cached_data)
-        
-        print(f"❌ Cache miss for crypto-data: {cache_key}")
         
         # Fetch fresh data
         prices = fetch_price_data()
@@ -508,8 +445,6 @@ def get_crypto_data():
         # Get cached news and paginate
         all_news = get_cached_news()
         paginated_result = paginate_news(all_news, page, per_page)
-        
-        print(f"📊 Fetched {len(prices)} prices and {len(paginated_result['news'])} paginated news articles")
         
         # Store data for analysis
         if prices and hasattr(analyzer, 'store_price_data'):
@@ -524,20 +459,14 @@ def get_crypto_data():
         # Cache the response
         set_cache(cache_key, response, CACHE_DURATION_SECONDS)
         
-        print(f"✅ Returning response with {len(response['prices'])} prices and pagination info")
         return jsonify(response)
     except Exception as e:
-        print(f"❌ Error in get_crypto_data: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': str(e), 'prices': [], 'news': [], 'pagination': None}), 500
 
 @app.route("/news", methods=["GET"])
 def get_news_only():
     """Enhanced news endpoint with caching"""
     try:
-        print("🔄 /news endpoint called")
-        
         # Get pagination parameters
         page = int(request.args.get('page', 1))
         per_page = min(int(request.args.get('per_page', 10)), 50)  # Limit to 50
@@ -548,10 +477,7 @@ def get_news_only():
         # Try cache first
         cached_data = get_cache(cache_key)
         if cached_data:
-            print(f"✅ Cache hit for news: {cache_key}")
             return jsonify(cached_data)
-        
-        print(f"❌ Cache miss for news: {cache_key}")
         
         # Get cached news and paginate
         all_news = get_cached_news()
@@ -572,13 +498,9 @@ def get_news_only():
         # Cache the response
         set_cache(cache_key, response, CACHE_DURATION_SECONDS)
         
-        print(f"✅ Returning {len(paginated_result['news'])} news articles (page {page})")
         return jsonify(response)
         
     except Exception as e:
-        print(f"❌ Error in get_news_only: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': str(e), 'news': [], 'pagination': None}), 500
 
 @app.route("/crypto-stream")
@@ -589,7 +511,6 @@ def crypto_stream():
         
         while error_count < max_errors:
             try:
-                print("🔄 Streaming data...")
                 prices = fetch_price_data()
                 
                 # For streaming, get first page of news
@@ -612,7 +533,6 @@ def crypto_stream():
                 
             except Exception as e:
                 error_count += 1
-                print(f"❌ Error in stream (attempt {error_count}): {e}")
                 yield f"data: {json.dumps({'error': str(e), 'prices': [], 'news': [], 'pagination': None})}\n\n"
                 time.sleep(10)
 
@@ -662,7 +582,6 @@ def health_check():
 def debug_prices():
     """Debug endpoint to test price fetching"""
     try:
-        print("🔍 Debug endpoint called")
         prices = fetch_price_data()
         return jsonify({
             'success': True,
@@ -672,20 +591,15 @@ def debug_prices():
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
         })
     except Exception as e:
-        print(f"❌ Debug error: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({
             'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
+            'error': str(e)
         }), 500
 
 @app.route("/refresh-news", methods=["POST"])
 def force_refresh_news():
     """Manual endpoint to force news refresh"""
     try:
-        print("🔄 Manual news refresh triggered")
         with news_cache['lock']:
             fresh_news = fetch_news_from_api()
             if fresh_news:
@@ -718,7 +632,6 @@ def force_refresh_news():
                     'message': 'Failed to fetch fresh news'
                 }), 500
     except Exception as e:
-        print(f"❌ Error in force refresh: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
@@ -815,8 +728,6 @@ def rate_limit_error(error):
     }), 429
 
 if __name__ == "__main__":
-    print("🚀 Starting Enhanced Crypto Analysis API...")
-    
     # Initialize the analyzer in the background
     init_thread = Thread(target=initialize_analyzer, daemon=True)
     init_thread.start()
@@ -828,14 +739,6 @@ if __name__ == "__main__":
     # Get port from environment or default to 5000
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_ENV") == "development"
-    
-    print(f"✅ Server configuration:")
-    print(f"   - Port: {port}")
-    print(f"   - Debug mode: {debug}")
-    print(f"   - Cache type: {'Redis' if USE_REDIS else 'Memory'}")
-    print(f"   - CORS origins: {allowed_origins}")
-    print(f"   - Supported coins: {len(coin_ids)} coins")
-    print(f"   - News refresh interval: {NEWS_CACHE_DURATION_HOURS} hours")
     
     # Run the Flask app
     app.run(

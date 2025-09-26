@@ -3,16 +3,8 @@
 import React, { useEffect, useState } from "react";
 import { useSSE } from "@/hooks/useSSE";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import dynamic from "next/dynamic";
 import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-} from "recharts";
-import {
-  AlertCircle,
   Loader2,
   TrendingUp,
   TrendingDown,
@@ -24,6 +16,13 @@ import { ChevronLeft, ChevronRight, RefreshCw, Clock } from "lucide-react";
 import { motion } from "framer-motion";
 import { API_CONFIG } from "@/config/api";
 import { Button } from "@/components/ui/button";
+const Chart = dynamic(() => import("@/components/Chart").then((m) => m.Chart), {
+  ssr: false,
+});
+const LargeChart = dynamic(
+  () => import("@/components/Chart").then((m) => m.LargeChart),
+  { ssr: false }
+);
 
 interface CryptoPrice {
   id: string;
@@ -111,6 +110,136 @@ interface SSEResponse<T> {
   isInitialLoading: boolean;
 }
 
+const isPriceImpactingNews = (news: NewsItem): boolean => {
+  const text = `${news.title || ""} ${news.summary || ""}`.toLowerCase();
+  const strongCatalysts = [
+    "sec",
+    "cftc",
+    "lawsuit",
+    "settlement",
+    "subpoena",
+    "regulator",
+    "regulation",
+    "legal",
+    "approval",
+    "approved",
+    "denied",
+    "reject",
+    "rejected",
+    "listing",
+    "listed",
+    "delist",
+    "delisted",
+    "coinbase",
+    "binance",
+    "kraken",
+    "okx",
+    "hack",
+    "hacked",
+    "exploit",
+    "breach",
+    "漏洞",
+    "rug pull",
+    "upgrade",
+    "hard fork",
+    "fork",
+    "mainnet",
+    "testnet",
+    "merge",
+    "eip",
+    "roadmap",
+    "halving",
+    "airdrop",
+    "staking",
+    "unstake",
+    "slashing",
+    "unlock",
+    "token unlock",
+    "vesting",
+    "burn",
+    "buyback",
+    "issuance",
+    "emission",
+    "supply",
+    "mint",
+    "partnership",
+    "integrat",
+    "adopt",
+    "collaborat",
+    "etf",
+    "spot etf",
+    "futures etf",
+    "fed",
+    "rate hike",
+    "interest rate",
+    "cpi",
+    "inflation",
+    "jobs report",
+    "bankruptcy",
+    "insolvency",
+    "restructuring",
+    "suspend",
+    "halt",
+    "pause",
+    "withdraw",
+    "ban",
+    "restrict",
+    "sanction",
+    "tax",
+  ];
+  const actionVerbs = [
+    "will ",
+    "to ",
+    "scheduled",
+    "deadline",
+    "vote",
+    "voting",
+    "propos",
+    "approve",
+    "launch",
+    "announce",
+    "announc",
+    "filed",
+    "files",
+    "filing",
+    "suspend",
+    "resume",
+  ];
+  const hasCatalyst = strongCatalysts.some((k) => text.includes(k));
+  const hasAction = actionVerbs.some((k) => text.includes(k));
+  return hasCatalyst || (hasCatalyst && hasAction);
+};
+
+const isUpcomingEventOrPolicyNews = (news: NewsItem): boolean => {
+  const text = `${news.title || ""} ${news.summary || ""}`.toLowerCase();
+  const keywords = [
+    "upcoming",
+    "will ",
+    "scheduled",
+    "announc",
+    "launch",
+    "upgrade",
+    "hard fork",
+    "fork",
+    "roadmap",
+    "proposal",
+    "governance",
+    "vote",
+    "etf",
+    "listing",
+    "policy",
+    "regulation",
+    "sec",
+    "cftc",
+    "halving",
+    "airdrop",
+    "staking update",
+    "mainnet",
+    "testnet",
+  ];
+  return keywords.some((k) => text.includes(k));
+};
+
 // Custom tooltip component for explanations
 const CustomTooltip = ({
   text,
@@ -193,6 +322,7 @@ const PredictionModal = ({
   analysis,
   chartData,
   modelReady,
+  relatedNews,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -200,6 +330,7 @@ const PredictionModal = ({
   analysis?: Analysis;
   chartData: ChartData[];
   modelReady: boolean;
+  relatedNews: NewsItem[];
 }) => {
   const [mounted, setMounted] = useState(false);
 
@@ -424,6 +555,132 @@ const PredictionModal = ({
               </CardContent>
             </Card>
 
+            {/* Latest News (Price-Impacting) */}
+            {relatedNews && relatedNews.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">
+                    Potential Price-Impacting News
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4">
+                  {(() => {
+                    const filtered = relatedNews
+                      .filter(isPriceImpactingNews)
+                      .sort(
+                        (a, b) => (b.published_at || 0) - (a.published_at || 0)
+                      );
+                    if (filtered.length === 0) {
+                      return (
+                        <p className="text-sm text-gray-500">
+                          noPotential Price-Impacting News...
+                        </p>
+                      );
+                    }
+                    return (
+                      <div className="space-y-3">
+                        {filtered.slice(0, 5).map((n) => (
+                          <div
+                            key={n.id || n.url}
+                            className="border-b last:border-b-0 pb-3"
+                          >
+                            <div className="flex justify-between items-start">
+                              <div className="mr-3">
+                                <a
+                                  href={n.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-medium text-blue-600 hover:underline"
+                                >
+                                  {n.title}
+                                </a>
+                                {n.summary && (
+                                  <p className="text-sm text-gray-600 mt-1 line-clamp-2">
+                                    {n.summary}
+                                  </p>
+                                )}
+                                <div className="text-xs text-gray-500 mt-1">
+                                  {n.source?.title}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="text-xs text-gray-500 whitespace-nowrap">
+                                  {formatRelativeTime(n.published_at)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Upcoming Events / Policy News */}
+            {relatedNews && relatedNews.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg">
+                    Upcoming Events / Policy News
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-4">
+                  {(() => {
+                    const filtered = relatedNews
+                      .filter(isUpcomingEventOrPolicyNews)
+                      .sort(
+                        (a, b) => (b.published_at || 0) - (a.published_at || 0)
+                      );
+                    if (filtered.length === 0) {
+                      return (
+                        <p className="text-sm text-gray-500">
+                          No upcoming events/policy news found.
+                        </p>
+                      );
+                    }
+                    return (
+                      <div className="space-y-3">
+                        {filtered.slice(0, 5).map((n) => (
+                          <div
+                            key={n.id || n.url}
+                            className="border-b last:border-b-0 pb-3"
+                          >
+                            <div className="flex justify-between items-start">
+                              <div className="mr-3">
+                                <a
+                                  href={n.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-medium text-blue-600 hover:underline"
+                                >
+                                  {n.title}
+                                </a>
+                                {n.summary && (
+                                  <p className="text-sm text-gray-600 mt-1 line-clamp-2">
+                                    {n.summary}
+                                  </p>
+                                )}
+                                <div className="text-xs text-gray-500 mt-1">
+                                  {n.source?.title}
+                                </div>
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="text-xs text-gray-500 whitespace-nowrap">
+                                  {formatRelativeTime(n.published_at)}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Price Chart */}
             {chartData.length > 0 && (
               <Card>
@@ -431,35 +688,7 @@ const PredictionModal = ({
                   <CardTitle>Recent Price Movement</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="h-64">
-                    <LineChart width={500} height={240} data={chartData}>
-                      <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                      <XAxis
-                        dataKey="name"
-                        tick={{ fontSize: 12 }}
-                        stroke="#888888"
-                      />
-                      <YAxis
-                        domain={["auto", "auto"]}
-                        tick={{ fontSize: 12 }}
-                        stroke="#888888"
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "white",
-                          border: "1px solid #e5e7eb",
-                        }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="price"
-                        stroke={isPredictedUp ? "#10B981" : "#EF4444"}
-                        strokeWidth={3}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </div>
+                  <LargeChart data={chartData} isPositive={isPredictedUp} />
                 </CardContent>
               </Card>
             )}
@@ -470,138 +699,118 @@ const PredictionModal = ({
   );
 };
 
-const CryptoPriceCard = ({
-  coin,
-  chartData,
-  analysis,
-  modelReady,
-}: {
-  coin: CryptoPrice;
-  chartData: ChartData[];
-  analysis?: Analysis;
-  modelReady: boolean;
-}) => {
-  const [showPrediction, setShowPrediction] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  const isPositive = coin.price_change_percentage_24h >= 0;
+const CryptoPriceCard = React.memo(
+  ({
+    coin,
+    chartData,
+    analysis,
+    modelReady,
+    relatedNews,
+  }: {
+    coin: CryptoPrice;
+    chartData: ChartData[];
+    analysis?: Analysis;
+    modelReady: boolean;
+    relatedNews: NewsItem[];
+  }) => {
+    const [showPrediction, setShowPrediction] = useState(false);
+    const [mounted, setMounted] = useState(false);
+    const isPositive = coin.price_change_percentage_24h >= 0;
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+    useEffect(() => {
+      setMounted(true);
+    }, []);
 
-  if (!mounted) {
-    return (
-      <Card className="overflow-hidden shadow-lg">
-        <CardHeader className="bg-gray-50">
-          <CardTitle className="capitalize flex justify-between items-center">
-            <span>Loading...</span>
-            <Loader2 className="h-5 w-5 animate-spin" />
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-4">
-          <div className="animate-pulse">
-            <div className="h-8 bg-gray-200 rounded mb-2"></div>
-            <div className="h-4 bg-gray-200 rounded mb-4"></div>
-            <div className="h-48 bg-gray-200 rounded"></div>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <>
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-      >
-        <Card className="overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
-          <CardHeader className={`${isPositive ? "bg-green-50" : "bg-red-50"}`}>
+    if (!mounted) {
+      return (
+        <Card className="overflow-hidden shadow-lg">
+          <CardHeader className="bg-gray-50">
             <CardTitle className="capitalize flex justify-between items-center">
-              <span>
-                {coin.id} ({coin.symbol.toUpperCase()})
-              </span>
-              {isPositive ? (
-                <TrendingUp className="h-5 w-5 text-green-600" />
-              ) : (
-                <TrendingDown className="h-5 w-5 text-red-600" />
-              )}
+              <span>Loading...</span>
+              <Loader2 className="h-5 w-5 animate-spin" />
             </CardTitle>
           </CardHeader>
           <CardContent className="p-4">
-            <div className="mb-4">
-              <p className="text-2xl font-bold">
-                ${coin.current_price.toLocaleString()}
-              </p>
-              <p
-                className={`text-sm ${
-                  isPositive ? "text-green-500" : "text-red-500"
-                }`}
-              >
-                {coin.price_change_percentage_24h.toFixed(2)}% (24h)
-              </p>
-              <p className="text-xs text-gray-500 mt-1">
-                Volume: ${(coin.total_volume / 1000000).toFixed(2)}M
-              </p>
+            <div className="animate-pulse">
+              <div className="h-8 bg-gray-200 rounded mb-2"></div>
+              <div className="h-4 bg-gray-200 rounded mb-4"></div>
+              <div className="h-48 bg-gray-200 rounded"></div>
             </div>
-
-            <div className="mb-4">
-              <button
-                onClick={() => setShowPrediction(true)}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
-              >
-                <Activity className="h-4 w-4" />
-                <span>View AI Prediction</span>
-              </button>
-            </div>
-
-            {chartData && chartData.length > 0 && (
-              <div className="h-48">
-                <LineChart width={300} height={180} data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 12 }}
-                    stroke="#888888"
-                  />
-                  <YAxis
-                    domain={["auto", "auto"]}
-                    tick={{ fontSize: 12 }}
-                    stroke="#888888"
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "white",
-                      border: "1px solid #e5e7eb",
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="price"
-                    stroke={isPositive ? "#10B981" : "#EF4444"}
-                    strokeWidth={2}
-                    dot={false}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </div>
-            )}
           </CardContent>
         </Card>
-      </motion.div>
+      );
+    }
 
-      <PredictionModal
-        isOpen={showPrediction}
-        onClose={() => setShowPrediction(false)}
-        coin={coin}
-        analysis={analysis}
-        chartData={chartData}
-        modelReady={modelReady}
-      />
-    </>
-  );
-};
+    return (
+      <>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+        >
+          <Card className="overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
+            <CardHeader
+              className={`${isPositive ? "bg-green-50" : "bg-red-50"}`}
+            >
+              <CardTitle className="capitalize flex justify-between items-center">
+                <span>
+                  {coin.id} ({coin.symbol.toUpperCase()})
+                </span>
+                {isPositive ? (
+                  <TrendingUp className="h-5 w-5 text-green-600" />
+                ) : (
+                  <TrendingDown className="h-5 w-5 text-red-600" />
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-4">
+              <div className="mb-4">
+                <p className="text-2xl font-bold">
+                  ${coin.current_price.toLocaleString()}
+                </p>
+                <p
+                  className={`text-sm ${
+                    isPositive ? "text-green-500" : "text-red-500"
+                  }`}
+                >
+                  {coin.price_change_percentage_24h.toFixed(2)}% (24h)
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Volume: ${(coin.total_volume / 1000000).toFixed(2)}M
+                </p>
+              </div>
+
+              <div className="mb-4">
+                <button
+                  onClick={() => setShowPrediction(true)}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-center space-x-2"
+                >
+                  <Activity className="h-4 w-4" />
+                  <span>View AI Prediction</span>
+                </button>
+              </div>
+
+              {chartData && chartData.length > 0 && (
+                <Chart data={chartData} isPositive={isPositive} />
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <PredictionModal
+          isOpen={showPrediction}
+          onClose={() => setShowPrediction(false)}
+          coin={coin}
+          analysis={analysis}
+          chartData={chartData}
+          modelReady={modelReady}
+          relatedNews={relatedNews}
+        />
+      </>
+    );
+  }
+);
+CryptoPriceCard.displayName = "CryptoPriceCard";
 
 const NewsCard = ({ item }: { item: NewsItem }) => {
   const [mounted, setMounted] = useState(false);
@@ -658,17 +867,6 @@ const NewsCard = ({ item }: { item: NewsItem }) => {
             {item.summary}
           </p>
         )}
-
-        <div className="flex flex-wrap gap-2">
-          {item.currencies.map((currency) => (
-            <span
-              key={currency.code}
-              className="bg-blue-100 text-blue-800 rounded-full px-3 py-1 text-xs font-medium"
-            >
-              {currency.code}
-            </span>
-          ))}
-        </div>
       </CardContent>
     </Card>
   );
@@ -792,12 +990,8 @@ const CacheStatus = ({
 }) => {
   if (!cacheInfo) return null;
 
-  const lastUpdated = cacheInfo.last_updated
-    ? new Date(cacheInfo.last_updated)
-    : new Date();
-  const nextRefresh = cacheInfo.next_refresh
-    ? new Date(cacheInfo.next_refresh)
-    : null;
+  // Derived values might be used later; suppress unused by minimal conditional usage
+  // Remove unused derived values for lint cleanliness
 
   return (
     <div className="flex justify-end mb-4">
@@ -823,7 +1017,7 @@ const EnhancedNewsComponent = () => {
   const [currentPage, setCurrentPage] = useState(1);
 
   // Fetch news data
-  const fetchNews = async (page: number = 1) => {
+  const fetchNews = React.useCallback(async (page: number = 1) => {
     try {
       setLoading(true);
       setError(null);
@@ -842,7 +1036,7 @@ const EnhancedNewsComponent = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   // Update the handleRefresh function
   const handleRefresh = async () => {
@@ -880,7 +1074,7 @@ const EnhancedNewsComponent = () => {
   // Initial load
   useEffect(() => {
     fetchNews(1);
-  }, []);
+  }, [fetchNews]);
 
   // Auto-refresh every 12 hours
   useEffect(() => {
@@ -889,7 +1083,7 @@ const EnhancedNewsComponent = () => {
     }, 12 * 60 * 60 * 1000); // 12 hours
 
     return () => clearInterval(interval);
-  }, [currentPage]);
+  }, [currentPage, fetchNews]);
 
   // Scroll to top when page changes
   useEffect(() => {
@@ -905,7 +1099,7 @@ const EnhancedNewsComponent = () => {
         // window.scrollTo({ top: headerHeight, behavior: 'smooth' });
       }, 100);
     }
-  }, [currentPage, loading]); // Trigger when currentPage changes or loading finishes
+  }, [currentPage, loading, newsData]);
 
   if (error) {
     return (
@@ -993,8 +1187,7 @@ const EnhancedNewsComponent = () => {
 };
 
 export default function Home() {
-  const { data, isConnected, error, isInitialLoading } =
-    useSSE() as SSEResponse<StreamData>;
+  const { data, isInitialLoading } = useSSE() as SSEResponse<StreamData>;
   const [prices, setPrices] = useState<CryptoPrice[]>([]);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [chartData, setChartData] = useState<{ [key: string]: ChartData[] }>(
@@ -1118,6 +1311,13 @@ export default function Home() {
                   chartData={chartData[coin.id] || []}
                   analysis={lastAnalysis[coin.id] || data?.analysis?.[coin.id]}
                   modelReady={data?.model_ready ?? false}
+                  relatedNews={(news || []).filter((n) =>
+                    n.currencies?.some(
+                      (c) =>
+                        c.code.toLowerCase() === coin.symbol.toLowerCase() ||
+                        c.title.toLowerCase() === coin.id.toLowerCase()
+                    )
+                  )}
                 />
               </motion.div>
             ))}
